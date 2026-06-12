@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Potgieterauto';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
 const conversations = {};
@@ -49,36 +49,38 @@ function sendToMake(data) {
   req.end();
 }
 
-async function getAIResponse(userMessage, history) {
-  const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
+async function getAIResponse(userMessage, history, userName) {
+  const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
 1. Their budget
 2. Whether they want new or used
 3. Their preferred make or model
-4. Their contact details (name and phone)
+4. Confirm their name and best contact number
 
-Once you have all this info, summarize it and tell them a consultant will call them soon.
-Rate the lead as HOT (ready to buy), WARM (interested but not urgent), or COLD (just browsing).
-Keep messages short and conversational. Use emojis occasionally. Never be pushy.`;
+Once you have all this info, thank them warmly and tell them a consultant will call them soon.
+Keep messages short and conversational. Use emojis occasionally. Never be pushy. Speak naturally like a real South African sales person.`;
 
-  const messages = [...history, { role: 'user', content: userMessage }];
+  const contents = [];
+  
+  for (const msg of history) {
+    contents.push({
+      role: msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }]
+    });
+  }
+  
+  contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
   const data = JSON.stringify({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 300,
-    system: systemPrompt,
-    messages: messages
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: contents
   });
 
   return new Promise((resolve) => {
     const options = {
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
       method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Content-Type': 'application/json' }
     };
 
     const req = https.request(options, (res) => {
@@ -87,7 +89,7 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
       res.on('end', () => {
         try {
           const parsed = JSON.parse(body);
-          resolve(parsed.content[0].text);
+          resolve(parsed.candidates[0].content.parts[0].text);
         } catch (e) {
           resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗");
         }
@@ -134,9 +136,9 @@ const server = http.createServer(async (req, res) => {
           const name = value.contacts?.[0]?.profile?.name || 'there';
 
           if (!conversations[from]) conversations[from] = [];
-          
-          const aiReply = await getAIResponse(text, conversations[from]);
-          
+
+          const aiReply = await getAIResponse(text, conversations[from], name);
+
           conversations[from].push({ role: 'user', content: text });
           conversations[from].push({ role: 'assistant', content: aiReply });
 
@@ -158,7 +160,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   res.writeHead(200);
-  res.end('Potgieter Auto Sales Bot Running');
+  res.end('Potgieter Auto Sales Bot - Ava is ready!');
 });
 
 server.listen(PORT, () => console.log('Ava is live on port ' + PORT));
