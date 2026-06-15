@@ -103,6 +103,9 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
 }
 
 const server = http.createServer(async (req, res) => {
+
+  console.log(req.method, req.url);
+
   const parsedUrl = url.parse(req.url, true);
 
   if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
