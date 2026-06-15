@@ -129,8 +129,7 @@ const server = http.createServer(async (req, res) => {
 
   console.log('RAW BODY:', body);
 
-  try {
-    const payload = JSON.parse(body);
+ 
       try {
         const payload = JSON.parse(body);
         const entry = payload.entry?.[0];
