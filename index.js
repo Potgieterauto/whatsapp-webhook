@@ -144,7 +144,11 @@ const server = http.createServer(async (req, res) => {
 
           if (!conversations[from]) conversations[from] = [];
 
-          const aiReply = await getAIResponse(text, conversations[from], name);
+         const aiReply = await getAIResponse(text, conversations[from], name);
+
+console.log('FROM:', from);
+console.log('MESSAGE:', text);
+console.log('AI REPLY:', aiReply);
 
           conversations[from].push({ role: 'user', content: text });
           conversations[from].push({ role: 'assistant', content: aiReply });
