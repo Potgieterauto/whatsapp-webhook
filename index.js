@@ -136,8 +136,11 @@ const server = http.createServer(async (req, res) => {
         const change = entry?.changes?.[0];
         const value = change?.value;
         const message = value?.messages?.[0];
-
+        
+console.log("MESSAGE OBJECT:", message);
+        
         if (message && message.type === 'text') {
+          console.log("TEXT MESSAGE DETECTED");
           const from = message.from;
           const text = message.text.body;
           const name = value.contacts?.[0]?.profile?.name || 'there';
