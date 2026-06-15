@@ -1,166 +1,92 @@
-const http = require('http');
-const https = require('https');
-const url = require('url');
+if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
 
-const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Potgieterauto';
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
+  console.log('WEBHOOK RECEIVED');
 
-const conversations = {};
+  let body = '';
 
-function sendWhatsAppMessage(to, message) {
-  const data = JSON.stringify({
-    messaging_product: 'whatsapp',
-    to: to,
-    type: 'text',
-    text: { body: message }
-  });
+  req.on('data', chunk => body += chunk);
 
-  const options = {
-    hostname: 'graph.facebook.com',
-    path: `/v18.0/${PHONE_NUMBER_ID}/messages`,
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-      'Content-Type': 'application/json'
-    }
-  };
+  req.on('end', async () => {
 
-  const req = https.request(options);
-  req.write(data);
-  req.end();
-}
+    console.log('RAW BODY:', body);
 
-function sendToMake(data) {
-  if (!MAKE_WEBHOOK_URL) return;
-  const makeUrl = new URL(MAKE_WEBHOOK_URL);
-  const body = JSON.stringify(data);
-  const options = {
-    hostname: makeUrl.hostname,
-    path: makeUrl.pathname,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-  };
-  const req = https.request(options);
-  req.write(body);
-  req.end();
-}
+    try {
 
-async function getAIResponse(userMessage, history, userName) {
-  const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
-1. Their budget
-2. Whether they want new or used
-3. Their preferred make or model
-4. Confirm their name and best contact number
+      const payload = JSON.parse(body);
 
-Once you have all this info, thank them warmly and tell them a consultant will call them soon.
-Keep messages short and conversational. Use emojis occasionally. Never be pushy. Speak naturally like a real South African sales person.`;
+      console.log('PAYLOAD:', JSON.stringify(payload, null, 2));
 
-  const contents = [];
-  
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    });
-  }
-  
-  contents.push({ role: 'user', parts: [{ text: userMessage }] });
+      const entry = payload.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+      const message = value?.messages?.[0];
 
-  const data = JSON.stringify({
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: contents
-  });
+      if (!message) {
+        console.log('No WhatsApp message found in payload');
+        res.writeHead(200);
+        res.end('OK');
+        return;
+      }
 
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    };
+      console.log('MESSAGE FOUND');
 
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(body);
-          resolve(parsed.candidates[0].content.parts[0].text);
-        } catch (e) {
-          resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗");
+      if (message.type === 'text') {
+
+        const from = message.from;
+        const text = message.text.body;
+        const name = value.contacts?.[0]?.profile?.name || 'there';
+
+        console.log('FROM:', from);
+        console.log('NAME:', name);
+        console.log('TEXT:', text);
+
+        if (!conversations[from]) {
+          conversations[from] = [];
         }
-      });
-    });
 
-    req.on('error', () => resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗"));
-    req.write(data);
-    req.end();
-  });
-}
+        const aiReply = await getAIResponse(
+          text,
+          conversations[from],
+          name
+        );
 
-const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
+        console.log('AI REPLY:', aiReply);
 
-  if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
-    const mode = parsedUrl.query['hub.mode'];
-    const token = parsedUrl.query['hub.verify_token'];
-    const challenge = parsedUrl.query['hub.challenge'];
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      res.writeHead(200);
-      res.end(challenge);
-    } else {
-      res.writeHead(403);
-      res.end('Forbidden');
+        conversations[from].push({
+          role: 'user',
+          content: text
+        });
+
+        conversations[from].push({
+          role: 'assistant',
+          content: aiReply
+        });
+
+        sendWhatsAppMessage(from, aiReply);
+
+        sendToMake({
+          name: name,
+          phone: from,
+          last_message: text,
+          ai_response: aiReply,
+          timestamp: new Date().toISOString()
+        });
+
+        console.log('Message sent to WhatsApp');
+        console.log('Lead sent to Make');
+      }
+
+    } catch (e) {
+
+      console.error('WEBHOOK ERROR');
+      console.error(e);
+
     }
-    return;
-  }
 
-  if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body);
-        const entry = payload.entry?.[0];
-        const change = entry?.changes?.[0];
-        const value = change?.value;
-        const message = value?.messages?.[0];
+    res.writeHead(200);
+    res.end('OK');
 
-        if (message && message.type === 'text') {
-          const from = message.from;
-          const text = message.text.body;
-          const name = value.contacts?.[0]?.profile?.name || 'there';
+  });
 
-          if (!conversations[from]) conversations[from] = [];
-
-          const aiReply = await getAIResponse(text, conversations[from], name);
-
-          conversations[from].push({ role: 'user', content: text });
-          conversations[from].push({ role: 'assistant', content: aiReply });
-
-          sendWhatsAppMessage(from, aiReply);
-
-          sendToMake({
-            name: name,
-            phone: from,
-            last_message: text,
-            ai_response: aiReply,
-            timestamp: new Date().toISOString()
-          });
-        }
-      } catch (e) {}
-      res.writeHead(200);
-      res.end('OK');
-    });
-    return;
-  }
-
-  res.writeHead(200);
-  res.end('Potgieter Auto Sales Bot - Ava is ready!');
-});
-
-server.listen(PORT, () => console.log('Ava is live on port ' + PORT));
+  return;
+}
