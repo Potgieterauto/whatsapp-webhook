@@ -126,6 +126,11 @@ const server = http.createServer(async (req, res) => {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
+
+  console.log('RAW BODY:', body);
+
+  try {
+    const payload = JSON.parse(body);
       try {
         const payload = JSON.parse(body);
         const entry = payload.entry?.[0];
