@@ -12,6 +12,11 @@ const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
 function sendWhatsAppMessage(to, message) {
+  console.log("SENDING TO:", to);
+console.log("MESSAGE:", message);
+console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
+console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
+  
   const data = JSON.stringify({
     messaging_product: 'whatsapp',
     to: to,
@@ -29,9 +34,25 @@ function sendWhatsAppMessage(to, message) {
     }
   };
 
-  const req = https.request(options);
-  req.write(data);
-  req.end();
+ const req = https.request(options, (res) => {
+  let responseBody = '';
+
+  res.on('data', chunk => {
+    responseBody += chunk;
+  });
+
+  res.on('end', () => {
+    console.log('WHATSAPP STATUS:', res.statusCode);
+    console.log('WHATSAPP RESPONSE:', responseBody);
+  });
+});
+
+req.on('error', (err) => {
+  console.log('WHATSAPP ERROR:', err.message);
+});
+
+req.write(data);
+req.end();
 }
 
 function sendToMake(data) {
