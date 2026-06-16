@@ -21,7 +21,7 @@ console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
 console.log("ATTEMPTING WHATSAPP SEND");
   
 const data = JSON.stringify({
- model: "meta-llama/llama-3.1-8b-instruct:free",
+model: "google/gemma-2-9b-it:free",
   messages: [
     {
       role: "system",
@@ -60,14 +60,15 @@ return new Promise((resolve) => {
       console.log("OPENROUTER RESPONSE:", body);
 
       try {
-        const parsed = JSON.parse(body);
-        resolve(parsed.choices[0].message.content);
-      } catch (e) {
-        console.log("OPENROUTER PARSE ERROR:", e);
-        console.log("OPENROUTER RAW RESPONSE:", body);
-        resolve("Sorry, I'm having trouble right now.");
-      }
+      const parsed = JSON.parse(body);
 
+if (parsed.error) {
+  console.log("OPENROUTER ERROR:", parsed.error);
+  resolve("Sorry, I'm having trouble right now.");
+  return;
+}
+
+resolve(parsed.choices[0].message.content);
     });
   });
 
