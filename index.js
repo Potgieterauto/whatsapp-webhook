@@ -6,8 +6,7 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Potgieterauto';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-console.log("API KEY EXISTS:", !!GEMINI_API_KEY);
-console.log("API KEY STARTS WITH:", GEMINI_API_KEY?.substring(0,10));
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
 const conversations = {};
