@@ -110,8 +110,6 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
     }
   ]
 });
-}
-    };
 
     const req = https.request(options, (res) => {
       let body = '';
@@ -120,10 +118,10 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
 
   console.log("GEMINI RESPONSE:", body);
 
-  try {
-    const parsed = JSON.parse(body);
-    resolve(parsed.candidates[0].content.parts[0].text);
-        } catch (e) {
+ try {
+  const parsed = JSON.parse(body);
+  resolve(parsed.choices[0].message.content);
+} catch (e) {
   console.log("GEMINI PARSE ERROR:", e);
   console.log("GEMINI RAW RESPONSE:", body);
   resolve("ERROR");
