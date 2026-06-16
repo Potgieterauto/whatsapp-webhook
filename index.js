@@ -112,8 +112,10 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
           const parsed = JSON.parse(body);
           resolve(parsed.candidates[0].content.parts[0].text);
         } catch (e) {
-          resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗");
-        }
+  console.log("GEMINI PARSE ERROR:", e);
+  console.log("GEMINI RAW RESPONSE:", body);
+  resolve("ERROR");
+}
       });
     });
 
