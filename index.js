@@ -19,42 +19,66 @@ console.log("MESSAGE:", message);
 console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
 console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
   
-  const data = JSON.stringify({
-    messaging_product: 'whatsapp',
-    to: to,
-    type: 'text',
-    text: { body: message }
-  });
+const data = JSON.stringify({
+  model: "mistralai/mistral-7b-instruct:free",
+  messages: [
+    {
+      role: "system",
+      content: systemPrompt
+    },
+    ...history.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    })),
+    {
+      role: "user",
+      content: userMessage
+    }
+  ]
+});
+
+return new Promise((resolve) => {
 
   const options = {
-    hostname: 'graph.facebook.com',
-    path: `/v18.0/${PHONE_NUMBER_ID}/messages`,
+    hostname: 'openrouter.ai',
+    path: '/api/v1/chat/completions',
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+      'Authorization': `Bearer ${GEMINI_API_KEY}`,
       'Content-Type': 'application/json'
     }
   };
 
- const req = https.request(options, (res) => {
-  let responseBody = '';
+  const req = https.request(options, (res) => {
+    let body = '';
 
-  res.on('data', chunk => {
-    responseBody += chunk;
+    res.on('data', chunk => body += chunk);
+
+    res.on('end', () => {
+
+      console.log("OPENROUTER RESPONSE:", body);
+
+      try {
+        const parsed = JSON.parse(body);
+        resolve(parsed.choices[0].message.content);
+      } catch (e) {
+        console.log("OPENROUTER PARSE ERROR:", e);
+        console.log("OPENROUTER RAW RESPONSE:", body);
+        resolve("Sorry, I'm having trouble right now.");
+      }
+
+    });
   });
 
-  res.on('end', () => {
-    console.log('WHATSAPP STATUS:', res.statusCode);
-    console.log('WHATSAPP RESPONSE:', responseBody);
+  req.on('error', (err) => {
+    console.log("OPENROUTER ERROR:", err);
+    resolve("Sorry, I'm having trouble right now.");
   });
-});
 
-req.on('error', (err) => {
-  console.log('WHATSAPP ERROR:', err.message);
-});
+  req.write(data);
+  req.end();
 
-req.write(data);
-req.end();
+});
 }
 
 function sendToMake(data) {
