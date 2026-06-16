@@ -99,7 +99,7 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   return new Promise((resolve) => {
     const options = {
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     };
@@ -107,10 +107,13 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
     const req = https.request(options, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(body);
-          resolve(parsed.candidates[0].content.parts[0].text);
+     res.on('end', () => {
+
+  console.log("GEMINI RESPONSE:", body);
+
+  try {
+    const parsed = JSON.parse(body);
+    resolve(parsed.candidates[0].content.parts[0].text);
         } catch (e) {
   console.log("GEMINI PARSE ERROR:", e);
   console.log("GEMINI RAW RESPONSE:", body);
