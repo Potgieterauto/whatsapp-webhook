@@ -136,26 +136,47 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   ]
 });
 
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-     res.on('end', () => {
+console.log("ABOUT TO CALL OPENROUTER");
 
-  console.log("GEMINI RESPONSE:", body);
+return new Promise((resolve) => {
 
- try {
-  const parsed = JSON.parse(body);
-  resolve(parsed.choices[0].message.content);
-} catch (e) {
-  console.log("GEMINI PARSE ERROR:", e);
-  console.log("GEMINI RAW RESPONSE:", body);
-  resolve("ERROR");
-}
-      });
-      
-    req.on('error', () => resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗"));
-    req.write(data);
-    req.end();
+  const options = {
+    hostname: 'openrouter.ai',
+    path: '/api/v1/chat/completions',
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${GEMINI_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  const req = https.request(options, (res) => {
+    let body = '';
+
+    res.on('data', chunk => body += chunk);
+
+    res.on('end', () => {
+      console.log("OPENROUTER RESPONSE:", body);
+
+      try {
+        const parsed = JSON.parse(body);
+        resolve(parsed.choices[0].message.content);
+      } catch (e) {
+        console.log("OPENROUTER PARSE ERROR:", e);
+        console.log("OPENROUTER RAW RESPONSE:", body);
+        resolve("Sorry, I'm having trouble right now.");
+      }
+    });
+  });
+
+  req.on('error', (err) => {
+    console.log("OPENROUTER ERROR:", err);
+    resolve("Sorry, I'm having trouble right now.");
+  });
+
+  req.write(data);
+  req.end();
+  
   });
 }
 
