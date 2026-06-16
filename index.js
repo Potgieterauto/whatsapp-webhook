@@ -56,21 +56,23 @@ return new Promise((resolve) => {
     res.on('data', chunk => body += chunk);
 
     res.on('end', () => {
+try {
+  const parsed = JSON.parse(body);
 
-      console.log("OPENROUTER RESPONSE:", body);
+  if (parsed.error) {
+    console.log("OPENROUTER ERROR:", parsed.error);
+    resolve("Sorry, I'm having trouble right now.");
+    return;
+  }
 
-      try {
-      const parsed = JSON.parse(body);
+  resolve(parsed.choices[0].message.content);
 
-if (parsed.error) {
-  console.log("OPENROUTER ERROR:", parsed.error);
+} catch (e) {
+  console.log("OPENROUTER PARSE ERROR:", e);
+  console.log("OPENROUTER RAW RESPONSE:", body);
   resolve("Sorry, I'm having trouble right now.");
-  return;
 }
-
-resolve(parsed.choices[0].message.content);
-    });
-  });
+});
 
   req.on('error', (err) => {
     console.log("OPENROUTER ERROR:", err);
