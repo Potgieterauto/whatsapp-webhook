@@ -127,8 +127,7 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   resolve("ERROR");
 }
       });
-    });
-
+      
     req.on('error', () => resolve("Hi! I'm Ava from Potgieter Auto. How can I help you find your perfect car today? 🚗"));
     req.write(data);
     req.end();
