@@ -36,7 +36,7 @@ const data = JSON.stringify({
     }
   ]
 });
-
+console.log("ABOUT TO CALL OPENROUTER");
 return new Promise((resolve) => {
 
   const options = {
@@ -97,6 +97,7 @@ function sendToMake(data) {
 }
 
 async function getAIResponse(userMessage, history, userName) {
+  console.log("ENTERED getAIResponse");
   const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
 1. Their budget
 2. Whether they want new or used
