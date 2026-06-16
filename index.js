@@ -83,7 +83,6 @@ try {
   req.end();
 
 });
-}
 
 function sendToMake(data) {
   if (!MAKE_WEBHOOK_URL) return;
