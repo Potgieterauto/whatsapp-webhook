@@ -91,7 +91,7 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
   const data = JSON.stringify({
-    model: "meta-llama/llama-3.1-8b-instruct:free",
+   model: "meta-llama/llama-3.3-70b-instruct:free",
     messages: [
       {
         role: "system",
