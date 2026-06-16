@@ -15,74 +15,43 @@ const conversations = {};
 
 function sendWhatsAppMessage(to, message) {
   console.log("SENDING TO:", to);
-console.log("MESSAGE:", message);
-console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
-console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
-console.log("ATTEMPTING WHATSAPP SEND");
-  
-const data = JSON.stringify({
-model: "google/gemma-2-9b-it:free",
-  messages: [
-    {
-      role: "system",
-      content: systemPrompt
-    },
-    ...history.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    })),
-    {
-      role: "user",
-      content: userMessage
-    }
-  ]
-});
-console.log("ABOUT TO CALL OPENROUTER");
-return new Promise((resolve) => {
+  console.log("MESSAGE:", message);
+  console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
+  console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
+  console.log("ATTEMPTING WHATSAPP SEND");
+
+  const data = JSON.stringify({
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'text',
+    text: { body: message }
+  });
 
   const options = {
-    hostname: 'openrouter.ai',
-    path: '/api/v1/chat/completions',
+    hostname: 'graph.facebook.com',
+    path: `/v17.0/${PHONE_NUMBER_ID}/messages`,
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${GEMINI_API_KEY}`,
+      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
       'Content-Type': 'application/json'
     }
   };
 
   const req = https.request(options, (res) => {
     let body = '';
-
     res.on('data', chunk => body += chunk);
-
     res.on('end', () => {
-try {
-  const parsed = JSON.parse(body);
-
-  if (parsed.error) {
-    console.log("OPENROUTER ERROR:", parsed.error);
-    resolve("Sorry, I'm having trouble right now.");
-    return;
-  }
-
-  resolve(parsed.choices[0].message.content);
-
-} catch (e) {
-  console.log("OPENROUTER PARSE ERROR:", e);
-  console.log("OPENROUTER RAW RESPONSE:", body);
-  resolve("Sorry, I'm having trouble right now.");
-}
-});
+      console.log("WHATSAPP RESPONSE:", body);
+    });
+  });
 
   req.on('error', (err) => {
-    console.log("OPENROUTER ERROR:", err);
-    resolve("Sorry, I'm having trouble right now.");
+    console.log("WHATSAPP ERROR:", err);
   });
 
   req.write(data);
   req.end();
-
-});
+}
 
 function sendToMake(data) {
   if (!MAKE_WEBHOOK_URL) return;
@@ -121,65 +90,65 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   
   contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
- const data = JSON.stringify({
- model: "meta-llama/llama-3.1-8b-instruct:free",
-  messages: [
-    {
-      role: "system",
-      content: systemPrompt
-    },
-    ...history.map(msg => ({
-      role: msg.role,
-      content: msg.content
-    })),
-    {
-      role: "user",
-      content: userMessage
-    }
-  ]
-});
-
-console.log("ABOUT TO CALL OPENROUTER");
-
-return new Promise((resolve) => {
-
-  const options = {
-    hostname: 'openrouter.ai',
-    path: '/api/v1/chat/completions',
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${GEMINI_API_KEY}`,
-      'Content-Type': 'application/json'
-    }
-  };
-
-  const req = https.request(options, (res) => {
-    let body = '';
-
-    res.on('data', chunk => body += chunk);
-
-    res.on('end', () => {
-      console.log("OPENROUTER RESPONSE:", body);
-
-      try {
-        const parsed = JSON.parse(body);
-        resolve(parsed.choices[0].message.content);
-      } catch (e) {
-        console.log("OPENROUTER PARSE ERROR:", e);
-        console.log("OPENROUTER RAW RESPONSE:", body);
-        resolve("Sorry, I'm having trouble right now.");
+  const data = JSON.stringify({
+    model: "meta-llama/llama-3.1-8b-instruct:free",
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt
+      },
+      ...history.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      })),
+      {
+        role: "user",
+        content: userMessage
       }
+    ]
+  });
+
+  console.log("ABOUT TO CALL OPENROUTER");
+
+  return new Promise((resolve) => {
+
+    const options = {
+      hostname: 'openrouter.ai',
+      path: '/api/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GEMINI_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+
+      res.on('data', chunk => body += chunk);
+
+      res.on('end', () => {
+        console.log("OPENROUTER RESPONSE:", body);
+
+        try {
+          const parsed = JSON.parse(body);
+          resolve(parsed.choices[0].message.content);
+        } catch (e) {
+          console.log("OPENROUTER PARSE ERROR:", e);
+          console.log("OPENROUTER RAW RESPONSE:", body);
+          resolve("Sorry, I'm having trouble right now.");
+        }
+      });
     });
-  });
 
-  req.on('error', (err) => {
-    console.log("OPENROUTER ERROR:", err);
-    resolve("Sorry, I'm having trouble right now.");
-  });
+    req.on('error', (err) => {
+      console.log("OPENROUTER ERROR:", err);
+      resolve("Sorry, I'm having trouble right now.");
+    });
 
-  req.write(data);
-  req.end();
-  
+    req.write(data);
+    req.end();
+
   });
 }
 
@@ -208,9 +177,8 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
 
-  console.log('RAW BODY:', body);
+      console.log('RAW BODY:', body);
 
- 
       try {
         const payload = JSON.parse(body);
         const entry = payload.entry?.[0];
@@ -218,7 +186,7 @@ const server = http.createServer(async (req, res) => {
         const value = change?.value;
         const message = value?.messages?.[0];
         
-console.log("MESSAGE OBJECT:", message);
+        console.log("MESSAGE OBJECT:", message);
         
         if (message && message.type === 'text') {
           console.log("TEXT MESSAGE DETECTED");
@@ -227,17 +195,17 @@ console.log("MESSAGE OBJECT:", message);
           const name = value.contacts?.[0]?.profile?.name || 'there';
 
           if (!conversations[from]) conversations[from] = [];
-conversations[from].push({
-  role: 'user',
-  content: text
-});
-         const aiReply = await getAIResponse(text, conversations[from], name);
+          conversations[from].push({
+            role: 'user',
+            content: text
+          });
 
-console.log('FROM:', from);
-console.log('MESSAGE:', text);
-console.log('AI REPLY:', aiReply);
+          const aiReply = await getAIResponse(text, conversations[from], name);
 
-          
+          console.log('FROM:', from);
+          console.log('MESSAGE:', text);
+          console.log('AI REPLY:', aiReply);
+
           conversations[from].push({ role: 'assistant', content: aiReply });
 
           sendWhatsAppMessage(from, aiReply);
