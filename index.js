@@ -167,14 +167,17 @@ console.log("MESSAGE OBJECT:", message);
           const name = value.contacts?.[0]?.profile?.name || 'there';
 
           if (!conversations[from]) conversations[from] = [];
-
+conversations[from].push({
+  role: 'user',
+  content: text
+});
          const aiReply = await getAIResponse(text, conversations[from], name);
 
 console.log('FROM:', from);
 console.log('MESSAGE:', text);
 console.log('AI REPLY:', aiReply);
 
-          conversations[from].push({ role: 'user', content: text });
+          
           conversations[from].push({ role: 'assistant', content: aiReply });
 
           sendWhatsAppMessage(from, aiReply);
