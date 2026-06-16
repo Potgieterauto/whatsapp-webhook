@@ -93,19 +93,23 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
   
   contents.push({ role: 'user', parts: [{ text: userMessage }] });
 
-  const data = JSON.stringify({
-    system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: contents
-  });
-
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'openrouter.ai',
-      path: `/api/v1/chat/completions`,
-      method: 'POST',
-     headers: {
-  'Authorization': `Bearer ${GEMINI_API_KEY}`,
-  'Content-Type': 'application/json'
+ const data = JSON.stringify({
+  model: "mistralai/mistral-7b-instruct:free",
+  messages: [
+    {
+      role: "system",
+      content: systemPrompt
+    },
+    ...history.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    })),
+    {
+      role: "user",
+      content: userMessage
+    }
+  ]
+});
 }
     };
 
