@@ -6,9 +6,9 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Potgieterauto';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const GEMINI_API_KEY = process.env.OPENAI_API_KEY;
-console.log("API KEY EXISTS:", !!GEMINI_API_KEY);
-console.log("API KEY STARTS WITH:", GEMINI_API_KEY?.substring(0,10));
+const ANTHROPIC_API_KEY = process.env.OPENAI_API_KEY;
+console.log("API KEY EXISTS:", !!ANTHROPIC_API_KEY);
+console.log("API KEY STARTS WITH:", ANTHROPIC_API_KEY?.substring(0,10));
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
 const conversations = {};
@@ -79,24 +79,11 @@ async function getAIResponse(userMessage, history, userName) {
 Once you have all this info, thank them warmly and tell them a consultant will call them soon.
 Keep messages short and conversational. Use emojis occasionally. Never be pushy. Speak naturally like a real South African sales person.`;
 
-  const contents = [];
-  
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    });
-  }
-  
-  contents.push({ role: 'user', parts: [{ text: userMessage }] });
-
   const data = JSON.stringify({
- model: "mistralai/mistral-7b-instruct:free",
+    model: "claude-sonnet-4-6",
+    max_tokens: 1024,
+    system: systemPrompt,
     messages: [
-      {
-        role: "system",
-        content: systemPrompt
-      },
       ...history.map(msg => ({
         role: msg.role,
         content: msg.content
@@ -108,16 +95,17 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
     ]
   });
 
-  console.log("ABOUT TO CALL OPENROUTER");
+  console.log("ABOUT TO CALL ANTHROPIC");
 
   return new Promise((resolve) => {
 
     const options = {
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${GEMINI_API_KEY}`,
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json'
       }
     };
@@ -128,21 +116,21 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
       res.on('data', chunk => body += chunk);
 
       res.on('end', () => {
-        console.log("OPENROUTER RESPONSE:", body);
+        console.log("ANTHROPIC RESPONSE:", body);
 
         try {
           const parsed = JSON.parse(body);
-          resolve(parsed.choices[0].message.content);
+          resolve(parsed.content[0].text);
         } catch (e) {
-          console.log("OPENROUTER PARSE ERROR:", e);
-          console.log("OPENROUTER RAW RESPONSE:", body);
+          console.log("ANTHROPIC PARSE ERROR:", e);
+          console.log("ANTHROPIC RAW RESPONSE:", body);
           resolve("Sorry, I'm having trouble right now.");
         }
       });
     });
 
     req.on('error', (err) => {
-      console.log("OPENROUTER ERROR:", err);
+      console.log("ANTHROPIC ERROR:", err);
       resolve("Sorry, I'm having trouble right now.");
     });
 
@@ -185,9 +173,9 @@ const server = http.createServer(async (req, res) => {
         const change = entry?.changes?.[0];
         const value = change?.value;
         const message = value?.messages?.[0];
-        
+
         console.log("MESSAGE OBJECT:", message);
-        
+
         if (message && message.type === 'text') {
           console.log("TEXT MESSAGE DETECTED");
           const from = message.from;
