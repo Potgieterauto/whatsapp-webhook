@@ -18,6 +18,7 @@ function sendWhatsAppMessage(to, message) {
 console.log("MESSAGE:", message);
 console.log("PHONE_NUMBER_ID:", PHONE_NUMBER_ID);
 console.log("TOKEN EXISTS:", !!WHATSAPP_TOKEN);
+console.log("ATTEMPTING WHATSAPP SEND");
   
 const data = JSON.stringify({
  model: "meta-llama/llama-3.1-8b-instruct:free",
