@@ -98,10 +98,13 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
 
   return new Promise((resolve) => {
     const options = {
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      hostname: 'openrouter.ai',
+      path: `/api/v1/chat/completions`,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+     headers: {
+  'Authorization': `Bearer ${GEMINI_API_KEY}`,
+  'Content-Type': 'application/json'
+}
     };
 
     const req = https.request(options, (res) => {
