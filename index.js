@@ -10,7 +10,7 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// Google Sheets Environment Variables (With Robust Private Key Fix)
+// Google Sheets Environment Variables
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
@@ -23,7 +23,7 @@ console.log("SHEETS CONFIG EXISTS:", !!SPREADSHEET_ID && !!GOOGLE_SERVICE_ACCOUN
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
-// --- SAVE DIRECTLY TO GOOGLE SHEETS ---
+// --- SAVE OR UPDATE DIRECTLY IN GOOGLE SHEETS ---
 async function saveToGoogleSheets(leadData) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
@@ -41,20 +41,44 @@ async function saveToGoogleSheets(leadData) {
     await doc.loadInfo();
     
     const sheet = doc.sheetsByIndex[0]; 
+    const rows = await sheet.getRows();
     
-    await sheet.addRow({
-      'Date': new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' }),
-      'Name': leadData.name,
-      'Phone': leadData.phone,
-      'Vehicle': leadData.vehicle,
-      'Condition': leadData.condition,
-      'Budget': leadData.budget,
-      'Tier': leadData.tier
-    });
-    
-    console.log("SHEETS SUCCESS: Lead successfully appended to Google Sheet!");
+    // Search for an existing lead with this phone number
+    const existingRow = rows.find(row => row.get('Phone') === leadData.phone);
+    const timestamp = new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' });
+
+    if (existingRow) {
+      console.log(`SHEETS: Found existing lead for ${leadData.phone}. Updating columns...`);
+      
+      // Only overwrite fields if Gemini successfully extracted actual data (don't overwrite with "Unknown")
+      if (leadData.name && leadData.name !== "Unknown") existingRow.set('Name', leadData.name);
+      if (leadData.vehicle && leadData.vehicle !== "Unknown") existingRow.set('Vehicle', leadData.vehicle);
+      if (leadData.condition && leadData.condition !== "Unknown") existingRow.set('Condition', leadData.condition);
+      if (leadData.budget && leadData.budget !== "Unknown") existingRow.set('Budget', leadData.budget);
+      if (leadData.tier && leadData.tier !== "Cold") existingRow.set('Tier', leadData.tier);
+      
+      // Update the timestamp to show when they last interacted
+      existingRow.set('Date', timestamp);
+      
+      await existingRow.save();
+      console.log("SHEETS SUCCESS: Existing lead row updated successfully!");
+    } else {
+      console.log(`SHEETS: No existing lead found for ${leadData.phone}. Creating new row...`);
+      
+      await sheet.addRow({
+        'Date': timestamp,
+        'Name': leadData.name,
+        'Phone': leadData.phone,
+        'Vehicle': leadData.vehicle,
+        'Condition': leadData.condition,
+        'Budget': leadData.budget,
+        'Tier': leadData.tier
+      });
+      
+      console.log("SHEETS SUCCESS: New lead row appended to Google Sheet!");
+    }
   } catch (error) {
-    console.error("SHEETS ERROR: Failed to append row:", error);
+    console.error("SHEETS ERROR: Failed to save/update row:", error);
   }
 }
 
@@ -282,7 +306,7 @@ const server = http.createServer(async (req, res) => {
 
           if (!conversations[from]) conversations[from] = [];
           
-          // Protect payload: strict role alternation logic
+          // Protect payload structure: strict role alternation
           const lastTurn = conversations[from][conversations[from].length - 1];
           if (!lastTurn || lastTurn.role === 'assistant') {
             conversations[from].push({ role: 'user', content: text });
@@ -292,7 +316,6 @@ const server = http.createServer(async (req, res) => {
 
           const aiReply = await getAIResponse(text, conversations[from], name);
           
-          // Never push system fallback errors to history
           if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
             conversations[from].push({ role: 'assistant', content: aiReply });
           }
@@ -303,6 +326,7 @@ const server = http.createServer(async (req, res) => {
           if (extractedData.name === "Unknown") extractedData.name = name;
           extractedData.phone = from;
           
+          // Triggers our new lookup logic (Update row vs Add row)
           await saveToGoogleSheets(extractedData);
 
           sendToMake({
