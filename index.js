@@ -6,9 +6,9 @@ const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Potgieterauto';
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const GEMINI_API_KEY = process.env.OPENAI_API_KEY;
-console.log("API KEY EXISTS:", !!GEMINI_API_KEY);
-console.log("API KEY STARTS WITH:", GEMINI_API_KEY?.substring(0,10));
+const ANTHROPIC_API_KEY = process.env.OPENAI_API_KEY;
+console.log("API KEY EXISTS:", !!ANTHROPIC_API_KEY);
+console.log("API KEY STARTS WITH:", ANTHROPIC_API_KEY?.substring(0,10));
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 
 const conversations = {};
@@ -79,33 +79,33 @@ async function getAIResponse(userMessage, history, userName) {
 Once you have all this info, thank them warmly and tell them a consultant will call them soon.
 Keep messages short and conversational. Use emojis occasionally. Never be pushy. Speak naturally like a real South African sales person.`;
 
-  const contents = [];
-
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    });
-  }
-
-  contents.push({ role: 'user', parts: [{ text: userMessage }] });
-
   const data = JSON.stringify({
-    system_instruction: {
-      parts: [{ text: systemPrompt }]
-    },
-    contents: contents
+    model: "claude-sonnet-4-6",
+    max_tokens: 1024,
+    system: systemPrompt,
+    messages: [
+      ...history.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      })),
+      {
+        role: "user",
+        content: userMessage
+      }
+    ]
   });
 
-  console.log("ABOUT TO CALL GEMINI");
+  console.log("ABOUT TO CALL ANTHROPIC");
 
   return new Promise((resolve) => {
 
     const options = {
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
       method: 'POST',
       headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json'
       }
     };
@@ -116,21 +116,21 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
       res.on('data', chunk => body += chunk);
 
       res.on('end', () => {
-        console.log("GEMINI RESPONSE:", body);
+        console.log("ANTHROPIC RESPONSE:", body);
 
         try {
           const parsed = JSON.parse(body);
-          resolve(parsed.candidates[0].content.parts[0].text);
+          resolve(parsed.content[0].text);
         } catch (e) {
-          console.log("GEMINI PARSE ERROR:", e);
-          console.log("GEMINI RAW RESPONSE:", body);
+          console.log("ANTHROPIC PARSE ERROR:", e);
+          console.log("ANTHROPIC RAW RESPONSE:", body);
           resolve("Sorry, I'm having trouble right now.");
         }
       });
     });
 
     req.on('error', (err) => {
-      console.log("GEMINI ERROR:", err);
+      console.log("ANTHROPIC ERROR:", err);
       resolve("Sorry, I'm having trouble right now.");
     });
 
@@ -149,7 +149,7 @@ const server = http.createServer(async (req, res) => {
   if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
     const mode = parsedUrl.query['hub.mode'];
     const token = parsedUrl.query['hub.verify_token'];
-    const challenge = parsedUrl.query['hub.challenge'];
+        const challenge = parsedUrl.query['hub.challenge'];
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
       res.writeHead(200);
       res.end(challenge);
