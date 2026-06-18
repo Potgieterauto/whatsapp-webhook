@@ -282,10 +282,20 @@ const server = http.createServer(async (req, res) => {
 
           if (!conversations[from]) conversations[from] = [];
           
-          conversations[from].push({ role: 'user', content: text });
+          // Protect payload: strict role alternation logic
+          const lastTurn = conversations[from][conversations[from].length - 1];
+          if (!lastTurn || lastTurn.role === 'assistant') {
+            conversations[from].push({ role: 'user', content: text });
+          } else if (lastTurn && lastTurn.role === 'user') {
+            lastTurn.content += ` ${text}`;
+          }
 
           const aiReply = await getAIResponse(text, conversations[from], name);
-          conversations[from].push({ role: 'assistant', content: aiReply });
+          
+          // Never push system fallback errors to history
+          if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
+            conversations[from].push({ role: 'assistant', content: aiReply });
+          }
 
           sendWhatsAppMessage(from, aiReply);
 
