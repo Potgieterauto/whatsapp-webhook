@@ -11,11 +11,12 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// New Google Sheets Environment Variables
+// New Google Sheets Environment Variables (With Robust Private Key Fix)
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-// Render preserves newlines if you wrap the key in quotes in your dashboard configuration
-const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
+  ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '').trim()
+  : undefined;
 
 console.log("API KEY EXISTS:", !!GEMINI_API_KEY);
 console.log("SHEETS CONFIG EXISTS:", !!SPREADSHEET_ID && !!GOOGLE_SERVICE_ACCOUNT_EMAIL && !!GOOGLE_PRIVATE_KEY);
@@ -268,7 +269,6 @@ const server = http.createServer(async (req, res) => {
 
           // Triggering direct Google Sheets export asynchronously 
           const extractedData = await extractLeadDetails(conversations[from]);
-          // Use profile name if extraction fallback happens
           if (extractedData.name === "Unknown") extractedData.name = name;
           extractedData.phone = from;
           
