@@ -106,4 +106,4 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
   } catch (error) {
     console.error("SHEETS ERROR: Failed to balance row updates:", error);
   }
-}
+
