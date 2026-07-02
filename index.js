@@ -1,3 +1,4 @@
+JavaScript
 const http = require('http');
 const https = require('https');
 const url = require('url');
@@ -28,7 +29,6 @@ function cleanHistoryForGemini(history) {
   for (const msg of history) {
     if (!msg || !msg.content || msg.content.trim() === '') continue;
     
-    // Map internal roles to Gemini structure standards
     const currentRole = msg.role === 'assistant' ? 'model' : 'user';
 
     if (currentRole === expectedRole) {
@@ -36,10 +36,8 @@ function cleanHistoryForGemini(history) {
         role: currentRole,
         parts: [{ text: msg.content }]
       });
-      // Alternate requirement
       expectedRole = expectedRole === 'user' ? 'model' : 'user';
     } else if (currentRole === 'user' && expectedRole === 'model') {
-      // If client texts twice in a row, combine messages instead of breaking the schema
       if (clean.length > 0) {
         clean[clean.length - 1].parts[0].text += `\n${msg.content}`;
       }
@@ -48,7 +46,7 @@ function cleanHistoryForGemini(history) {
   return clean;
 }
 
-// --- SAVE OR UPDATE ROW PER CLIENT (SPLIT-SHEET MECHANISM) ---
+// --- SAVE OR UPDATE ROW PER CLIENT ---
 async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
@@ -67,10 +65,6 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
     
     const clientSheet = doc.sheetsByTitle['Clients'] || doc.sheetsByIndex[0];
     const logSheet = doc.sheetsByTitle['Chat Logs'];
-
-    if (!logSheet) {
-      console.log("SHEETS WARNING: Tab named 'Chat Logs' missing. Check tab titles.");
-    }
 
     const rows = await clientSheet.getRows();
     const timestamp = new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' });
@@ -146,12 +140,6 @@ Provide ONLY raw JSON matching this template without markdown code fences:
   const geminiContents = cleanHistoryForGemini(history);
   if (geminiContents.length === 0) return null;
 
-  const data = JSON.stringify({
-    contents: geminiContents,
-    systemInstruction: { parts: [{ text: analysisPrompt }] },
-    generationConfig: { responseMimeType: "application/json" }
-  });
-
   return new Promise((resolve) => {
     const options = {
       hostname: 'generativelanguage.googleapis.com',
@@ -174,7 +162,11 @@ Provide ONLY raw JSON matching this template without markdown code fences:
       });
     });
     req.on('error', () => resolve(null));
-    req.write(data);
+    req.write(JSON.stringify({
+      contents: geminiContents,
+      systemInstruction: { parts: [{ text: analysisPrompt }] },
+      generationConfig: { responseMimeType: "application/json" }
+    }));
     req.end();
   });
 }
@@ -312,6 +304,7 @@ const server = http.createServer(async (req, res) => {
             lastTurn.content += ` ${text}`;
           }
 
+          // 1. Fire chat response immediately to ensure user gets high-speed replies
           const aiReply = await getAIResponse(text, conversations[from], name);
           
           if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
@@ -320,7 +313,14 @@ const server = http.createServer(async (req, res) => {
 
           sendWhatsAppMessage(from, aiReply);
 
-          const extractedData = await extractLeadDetails(conversations[from]);
+          // 2. RATE LIMIT BYPASS: Only run data extraction if the context length is worth analyzing.
+          // This stops empty messages or simple "hi" notes from blowing up your 15 RPM free quota.
+          let extractedData = null;
+          const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
+          
+          if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
+            extractedData = await extractLeadDetails(conversations[from]);
+          }
 
           await saveToGoogleSheets(from, name, conversations[from], extractedData);
 
