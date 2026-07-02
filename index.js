@@ -210,4 +210,139 @@ function sendWhatsAppMessage(to, message) {
 // --- SEND TO MAKE ---
 function sendToMake(data) {
   if (!MAKE_WEBHOOK_URL) return;
-  const makeUrl = new URL(
+  const makeUrl = new URL(MAKE_WEBHOOK_URL);
+  const options = {
+    hostname: makeUrl.hostname,
+    path: makeUrl.pathname,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  };
+  const req = https.request(options);
+  req.write(JSON.stringify(data));
+  req.end();
+}
+
+// --- GET AI RESPONSE ---
+async function getAIResponse(userMessage, history, userName) {
+  const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
+1. Their budget
+2. Whether they want new or used
+3. Their preferred make or model
+4. Confirm their name and best contact number
+
+Once you have all this info, thank them warmly and explicitly use the phrase "a consultant will call you soon" so the backend knows they are ready.
+Keep messages short and conversational. Use emojis occasionally. Speak naturally like a real South African salesperson.`;
+
+  const geminiContents = cleanHistoryForGemini(history);
+
+  const data = JSON.stringify({
+    contents: geminiContents,
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    generationConfig: { maxOutputTokens: 512 }
+  });
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          if (res.statusCode !== 200) {
+            console.log("GEMINI API REJECTION ERROR STATUS:", res.statusCode);
+            resolve("Sorry, I'm having a brief look at our stock system. Give me one moment!");
+            return;
+          }
+          const parsed = JSON.parse(body);
+          resolve(parsed.candidates[0].content.parts[0].text.trim());
+        } catch (e) {
+          resolve("Sorry, I'm checking that info for you right now.");
+        }
+      });
+    });
+    req.on('error', () => resolve("Sorry, let me look into that for you."));
+    req.write(data);
+    req.end();
+  });
+}
+
+// --- MAIN WEBHOOK ENGINE ---
+const server = http.createServer(async (req, res) => {
+  const parsedUrl = url.parse(req.url, true);
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
+    const mode = parsedUrl.query['hub.mode'];
+    const token = parsedUrl.query['hub.verify_token'];
+    const challenge = parsedUrl.query['hub.challenge'];
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      res.writeHead(200);
+      res.end(challenge);
+    } else {
+      res.writeHead(403);
+      res.end('Forbidden');
+    }
+    return;
+  }
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body);
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+        if (message && message.type === 'text') {
+          const from = message.from;
+          const text = message.text.body;
+          const name = payload.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name || 'there';
+
+          if (!conversations[from]) conversations[from] = [];
+          
+          const lastTurn = conversations[from][conversations[from].length - 1];
+          if (!lastTurn || lastTurn.role === 'assistant') {
+            conversations[from].push({ role: 'user', content: text });
+          } else if (lastTurn && lastTurn.role === 'user') {
+            lastTurn.content += ` ${text}`;
+          }
+
+          const aiReply = await getAIResponse(text, conversations[from], name);
+          
+          if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
+            conversations[from].push({ role: 'assistant', content: aiReply });
+          }
+
+          sendWhatsAppMessage(from, aiReply);
+
+          const extractedData = await extractLeadDetails(conversations[from]);
+
+          await saveToGoogleSheets(from, name, conversations[from], extractedData);
+
+          sendToMake({
+            name: name,
+            phone: from,
+            last_message: text,
+            ai_response: aiReply,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (e) {
+        console.log("WEBHOOK PROCESSING ERROR:", e);
+      }
+      res.writeHead(200);
+      res.end('OK');
+    });
+    return;
+  }
+
+  res.writeHead(200);
+  res.end('Ava Engine Active.');
+});
+
+server.listen(PORT, () => console.log('Ava live on port ' + PORT));
