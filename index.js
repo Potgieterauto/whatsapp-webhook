@@ -20,7 +20,7 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
-// --- SAVE OR UPDATE ROW PER CLIENT (FIXED PERSISTENCE) ---
+// --- SAVE OR UPDATE ROW PER CLIENT (SPLIT-SHEET MECHANISM) ---
 async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
@@ -37,58 +37,72 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
     const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
     await doc.loadInfo();
     
-    const sheet = doc.sheetsByIndex[0]; 
-    const rows = await sheet.getRows();
-    
-    // Format conversation history neatly into a single cell text block
-    const formattedChatLog = rawHistory
-      .filter(msg => msg && msg.content)
-      .map(msg => `${msg.role === 'assistant' ? 'Ava' : 'Client'}: ${msg.content}`)
-      .join('\n');
+    // Dynamically query tabs by text title
+    const clientSheet = doc.sheetsByTitle['Clients'] || doc.sheetsByIndex[0];
+    const logSheet = doc.sheetsByTitle['Chat Logs'];
 
-    const existingRow = rows.find(row => row.get('Phone') === phone);
+    if (!logSheet) {
+      console.log("SHEETS WARNING: Tab named 'Chat Logs' missing. Verify layout at the base of your sheet.");
+    }
+
+    const rows = await clientSheet.getRows();
     const timestamp = new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' });
+    
+    // Get the final entry object to append to the log line ticker
+    const latestMessageObj = rawHistory[rawHistory.length - 1];
+    const latestText = latestMessageObj?.content || "";
 
+    const existingRow = rows.find(row => String(row.get('Phone')) === String(phone));
+
+    // 1. UPDATE OR ADD MAIN CRM SUMMARY (TAB 1: 'Clients')
     if (existingRow) {
-      console.log(`SHEETS: Found match for ${phone}. Committing updates...`);
+      console.log(`SHEETS: Updating CRM metrics for unique entity ${phone}`);
       
       const updatePayload = {
-        'Date': timestamp,
-        'Chat History': formattedChatLog
+        'Date': timestamp
       };
 
-      // Only assign if extraction successfully passed valid elements
       if (extractedData) {
         if (extractedData.name && extractedData.name !== "Unknown") updatePayload['Name'] = extractedData.name;
         if (extractedData.vehicle && extractedData.vehicle !== "Unknown") updatePayload['Vehicle'] = extractedData.vehicle;
         if (extractedData.condition && extractedData.condition !== "Unknown") updatePayload['Condition'] = extractedData.condition;
         if (extractedData.budget && extractedData.budget !== "Unknown") updatePayload['Budget'] = extractedData.budget;
-        if (extractedData.tier) updatePayload['Tier'] = extractedData.tier; // Forces Hot/Warm/Cold mapping
+        if (extractedData.tier) updatePayload['Tier'] = extractedData.tier; 
       } else if (name && (!existingRow.get('Name') || existingRow.get('Name') === 'Unknown')) {
         updatePayload['Name'] = name;
       }
 
-      // FIXED: Uses official library .assign() object assignment pattern
       existingRow.assign(updatePayload);
       await existingRow.save();
-      console.log("SHEETS SUCCESS: Row updated in real-time!");
+      console.log("SHEETS SUCCESS: Summary CRM row synchronized!");
     } else {
-      console.log(`SHEETS: Creating brand new unique row for client ${phone}`);
+      console.log(`SHEETS: Appending brand new customer registration for ${phone}`);
       
-      await sheet.addRow({
+      await clientSheet.addRow({
         'Date': timestamp,
-        'Name': extractedData?.name || name,
+        'Name': extractedData?.name || name || 'Unknown',
         'Phone': phone,
         'Vehicle': extractedData?.vehicle || 'Unknown',
         'Condition': extractedData?.condition || 'Unknown',
         'Budget': extractedData?.budget || 'Unknown',
-        'Tier': extractedData?.tier || 'Warm',
-        'Chat History': formattedChatLog
+        'Tier': extractedData?.tier || 'Warm'
       });
-      console.log("SHEETS SUCCESS: New client added cleanly!");
+      console.log("SHEETS SUCCESS: Main dashboard profile appended.");
     }
+
+    // 2. LOG THE LATEST CONVERSATION LINE (TAB 2: 'Chat Logs')
+    if (logSheet && latestMessageObj) {
+      await logSheet.addRow({
+        'Timestamp': timestamp,
+        'Phone': phone,
+        'Sender': latestMessageObj.role === 'assistant' ? 'Ava' : 'Client',
+        'Message': latestText
+      });
+      console.log("SHEETS SUCCESS: New dialog text tracked on the Chat Logs tab!");
+    }
+
   } catch (error) {
-    console.error("SHEETS ERROR: Failed to balance row state:", error);
+    console.error("SHEETS ERROR: Failed to isolate multi-tab tracking sequence:", error);
   }
 }
 
