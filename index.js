@@ -80,7 +80,7 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
 
     const existingRow = rows.find(row => String(row.get('Phone')) === String(phone));
 
-    // 1. CRM SUMMARY ENTRY LOGIC (TAB 1)
+    // 1. CRM SUMMARY ENTRY LOGIC (TAB 1: 'Clients')
     if (existingRow) {
       console.log(`SHEETS: Updating CRM entry for user: ${phone}`);
       const updatePayload = { 'Date': timestamp };
@@ -110,7 +110,7 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       });
     }
 
-    // 2. LIVE CHAT LEDGER APPEND TICKER (TAB 2)
+    // 2. LIVE CHAT LEDGER APPEND TICKER (TAB 2: 'Chat Logs')
     if (logSheet && latestMessageObj) {
       await logSheet.addRow({
         'Timestamp': timestamp,
@@ -203,4 +203,11 @@ function sendWhatsAppMessage(to, message) {
     res.on('data', chunk => body += chunk);
     res.on('end', () => {});
   });
-  req
+  req.write(data);
+  req.end();
+}
+
+// --- SEND TO MAKE ---
+function sendToMake(data) {
+  if (!MAKE_WEBHOOK_URL) return;
+  const makeUrl = new URL(
