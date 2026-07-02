@@ -17,14 +17,11 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
   ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '').trim()
   : undefined;
 
-console.log("API KEY EXISTS:", !!GEMINI_API_KEY);
-console.log("SHEETS CONFIG EXISTS:", !!SPREADSHEET_ID && !!GOOGLE_SERVICE_ACCOUNT_EMAIL && !!GOOGLE_PRIVATE_KEY);
-
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
-// --- SAVE OR UPDATE DIRECTLY IN GOOGLE SHEETS ---
-async function saveToGoogleSheets(leadData) {
+// --- SAVE OR UPDATE ROW PER CLIENT (FIXED PERSISTENCE) ---
+async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
       console.log("SHEETS ERROR: Missing credentials in environment variables.");
@@ -43,62 +40,70 @@ async function saveToGoogleSheets(leadData) {
     const sheet = doc.sheetsByIndex[0]; 
     const rows = await sheet.getRows();
     
-    // Search for an existing lead with this phone number
-    const existingRow = rows.find(row => row.get('Phone') === leadData.phone);
+    // Format conversation history neatly into a single cell text block
+    const formattedChatLog = rawHistory
+      .filter(msg => msg && msg.content)
+      .map(msg => `${msg.role === 'assistant' ? 'Ava' : 'Client'}: ${msg.content}`)
+      .join('\n');
+
+    const existingRow = rows.find(row => row.get('Phone') === phone);
     const timestamp = new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' });
 
     if (existingRow) {
-      console.log(`SHEETS: Found existing lead for ${leadData.phone}. Updating columns...`);
+      console.log(`SHEETS: Found match for ${phone}. Committing updates...`);
       
-      // Only overwrite fields if Gemini successfully extracted actual data (don't overwrite with "Unknown")
-      if (leadData.name && leadData.name !== "Unknown") existingRow.set('Name', leadData.name);
-      if (leadData.vehicle && leadData.vehicle !== "Unknown") existingRow.set('Vehicle', leadData.vehicle);
-      if (leadData.condition && leadData.condition !== "Unknown") existingRow.set('Condition', leadData.condition);
-      if (leadData.budget && leadData.budget !== "Unknown") existingRow.set('Budget', leadData.budget);
-      if (leadData.tier && leadData.tier !== "Cold") existingRow.set('Tier', leadData.tier);
-      
-      // Update the timestamp to show when they last interacted
-      existingRow.set('Date', timestamp);
-      
+      const updatePayload = {
+        'Date': timestamp,
+        'Chat History': formattedChatLog
+      };
+
+      // Only assign if extraction successfully passed valid elements
+      if (extractedData) {
+        if (extractedData.name && extractedData.name !== "Unknown") updatePayload['Name'] = extractedData.name;
+        if (extractedData.vehicle && extractedData.vehicle !== "Unknown") updatePayload['Vehicle'] = extractedData.vehicle;
+        if (extractedData.condition && extractedData.condition !== "Unknown") updatePayload['Condition'] = extractedData.condition;
+        if (extractedData.budget && extractedData.budget !== "Unknown") updatePayload['Budget'] = extractedData.budget;
+        if (extractedData.tier) updatePayload['Tier'] = extractedData.tier; // Forces Hot/Warm/Cold mapping
+      } else if (name && (!existingRow.get('Name') || existingRow.get('Name') === 'Unknown')) {
+        updatePayload['Name'] = name;
+      }
+
+      // FIXED: Uses official library .assign() object assignment pattern
+      existingRow.assign(updatePayload);
       await existingRow.save();
-      console.log("SHEETS SUCCESS: Existing lead row updated successfully!");
+      console.log("SHEETS SUCCESS: Row updated in real-time!");
     } else {
-      console.log(`SHEETS: No existing lead found for ${leadData.phone}. Creating new row...`);
+      console.log(`SHEETS: Creating brand new unique row for client ${phone}`);
       
       await sheet.addRow({
         'Date': timestamp,
-        'Name': leadData.name,
-        'Phone': leadData.phone,
-        'Vehicle': leadData.vehicle,
-        'Condition': leadData.condition,
-        'Budget': leadData.budget,
-        'Tier': leadData.tier
+        'Name': extractedData?.name || name,
+        'Phone': phone,
+        'Vehicle': extractedData?.vehicle || 'Unknown',
+        'Condition': extractedData?.condition || 'Unknown',
+        'Budget': extractedData?.budget || 'Unknown',
+        'Tier': extractedData?.tier || 'Warm',
+        'Chat History': formattedChatLog
       });
-      
-      console.log("SHEETS SUCCESS: New lead row appended to Google Sheet!");
+      console.log("SHEETS SUCCESS: New client added cleanly!");
     }
   } catch (error) {
-    console.error("SHEETS ERROR: Failed to save/update row:", error);
+    console.error("SHEETS ERROR: Failed to balance row state:", error);
   }
 }
 
-// --- ANALYZE CHAT AND EXTRACT DATA ---
+// --- OPTIMIZED SMART EXTRACTION CALL ---
 async function extractLeadDetails(history) {
-  console.log("EXTRACTING LEAD DETAILS VIA GEMINI...");
+  console.log("RUNNING LEAD ANALYSIS AND TIERING...");
   
   const analysisPrompt = `Analyze the conversation history between a car sales agent and a customer. Extract the following information into raw JSON format.
-
 If an explicit answer isn't present in the chat for a field, put "Unknown".
 For "Condition", it must strictly be: "New", "Used", "Demo", or "Unknown".
-For "Tier", categorize the lead as:
-- "Hot" (If they provided a specific vehicle preference, explicit budget AND clear phone/contact number)
-- "Warm" (If they are engaging and provided a budget/car preference but haven't fully committed to contact info yet)
-- "Cold" (If they are barely responding or uninterested)
+For "Tier", categorize the lead as exactly "Hot", "Warm", or "Cold". Do not choose anything else.
 
 Provide ONLY raw JSON matching this template without markdown code fences:
 {
   "name": "Customer Name",
-  "phone": "Phone Number",
   "vehicle": "Make/Model Preference",
   "condition": "New/Used/Demo/Unknown",
   "budget": "Budget details",
@@ -106,18 +111,14 @@ Provide ONLY raw JSON matching this template without markdown code fences:
 }`;
 
   const validHistory = history.filter(msg => msg && typeof msg.content === 'string' && msg.content.trim() !== '');
-
   const geminiContents = validHistory.map(msg => ({
     role: msg.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: msg.content }]
   }));
 
-  if (geminiContents.length === 0) {
-    return { name: "Unknown", phone: "Unknown", vehicle: "Unknown", condition: "Unknown", budget: "Unknown", tier: "Cold" };
-  }
-
   const data = JSON.stringify({
     contents: geminiContents,
+    systemInstruction: { parts: [{ text: analysisPrompt }] },
     generationConfig: { responseMimeType: "application/json" }
   });
 
@@ -138,12 +139,11 @@ Provide ONLY raw JSON matching this template without markdown code fences:
           const jsonText = parsed.candidates[0].content.parts[0].text;
           resolve(JSON.parse(jsonText.trim()));
         } catch (e) {
-          console.log("EXTRACTION PARSE ERROR:", e);
-          resolve({ name: "Unknown", phone: "Unknown", vehicle: "Unknown", condition: "Unknown", budget: "Unknown", tier: "Cold" });
+          resolve(null);
         }
       });
     });
-    req.on('error', () => resolve({ name: "Unknown", phone: "Unknown", vehicle: "Unknown", condition: "Unknown", budget: "Unknown", tier: "Cold" }));
+    req.on('error', () => resolve(null));
     req.write(data);
     req.end();
   });
@@ -151,8 +151,6 @@ Provide ONLY raw JSON matching this template without markdown code fences:
 
 // --- SEND WHATSAPP MESSAGE ---
 function sendWhatsAppMessage(to, message) {
-  console.log("SENDING TO:", to);
-  
   const data = JSON.stringify({
     messaging_product: 'whatsapp',
     to: to,
@@ -173,10 +171,8 @@ function sendWhatsAppMessage(to, message) {
   const req = https.request(options, (res) => {
     let body = '';
     res.on('data', chunk => body += chunk);
-    res.on('end', () => console.log("WHATSAPP RESPONSE:", body));
+    res.on('end', () => {});
   });
-
-  req.on('error', (err) => console.log("WHATSAPP ERROR:", err));
   req.write(data);
   req.end();
 }
@@ -185,7 +181,6 @@ function sendWhatsAppMessage(to, message) {
 function sendToMake(data) {
   if (!MAKE_WEBHOOK_URL) return;
   const makeUrl = new URL(MAKE_WEBHOOK_URL);
-  const body = JSON.stringify(data);
   const options = {
     hostname: makeUrl.hostname,
     path: makeUrl.pathname,
@@ -193,44 +188,32 @@ function sendToMake(data) {
     headers: { 'Content-Type': 'application/json' }
   };
   const req = https.request(options);
-  req.write(body);
+  req.write(JSON.stringify(data));
   req.end();
 }
 
-// --- GET AI RESPONSE (SANITIZED & SAFE) ---
+// --- GET AI RESPONSE ---
 async function getAIResponse(userMessage, history, userName) {
-  console.log("ENTERED getAIResponse");
-  
   const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
 1. Their budget
 2. Whether they want new or used
 3. Their preferred make or model
 4. Confirm their name and best contact number
 
-Once you have all this info, thank them warmly and tell them a consultant will call them soon.
-Keep messages short and conversational. Use emojis occasionally. Never be pushy. Speak naturally like a real South African sales person.`;
+Once you have all this info, thank them warmly and explicitly use the phrase "a consultant will call you soon" so the backend knows they are ready.
+Keep messages short and conversational. Use emojis occasionally. Speak naturally like a real South African salesperson.`;
 
   const validHistory = history.filter(msg => msg && typeof msg.content === 'string' && msg.content.trim() !== '');
-
   const geminiContents = validHistory.map(msg => ({
     role: msg.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: msg.content }]
   }));
 
-  if (geminiContents.length === 0) {
-    geminiContents.push({
-      role: 'user',
-      parts: [{ text: userMessage || 'Hi' }]
-    });
-  }
-
   const data = JSON.stringify({
     contents: geminiContents,
     systemInstruction: { parts: [{ text: systemPrompt }] },
-    generationConfig: { maxOutputTokens: 1024 }
+    generationConfig: { maxOutputTokens: 512 }
   });
-
-  console.log("ABOUT TO CALL GEMINI 2.5 FLASH WITH SANITIZED HISTORY");
 
   return new Promise((resolve) => {
     const options = {
@@ -245,32 +228,24 @@ Keep messages short and conversational. Use emojis occasionally. Never be pushy.
       res.on('data', chunk => body += chunk);
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(body);
-          
           if (res.statusCode !== 200) {
-            console.log(`GEMINI API ERROR CODE ${res.statusCode}:`, body);
             resolve("Sorry, I'm having a brief look at our stock system. Give me one moment!");
             return;
           }
-
-          const aiText = parsed.candidates[0].content.parts[0].text;
-          resolve(aiText.trim());
+          const parsed = JSON.parse(body);
+          resolve(parsed.candidates[0].content.parts[0].text.trim());
         } catch (e) {
-          console.log("JSON PARSE ERROR IN AI RESPONSE:", e);
           resolve("Sorry, I'm checking that info for you right now.");
         }
       });
     });
-    req.on('error', (err) => {
-      console.log("HTTPS REQUEST ERROR IN AI RESPONSE:", err);
-      resolve("Sorry, let me look into that for you.");
-    });
+    req.on('error', () => resolve("Sorry, let me look into that for you."));
     req.write(data);
     req.end();
   });
 }
 
-// --- SERVER INSTANCE ---
+// --- MAIN WEBHOOK ENGINE ---
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
@@ -294,19 +269,15 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const payload = JSON.parse(body);
-        const entry = payload.entry?.[0];
-        const change = entry?.changes?.[0];
-        const value = change?.value;
-        const message = value?.messages?.[0];
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
 
         if (message && message.type === 'text') {
           const from = message.from;
           const text = message.text.body;
-          const name = value.contacts?.[0]?.profile?.name || 'there';
+          const name = payload.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name || 'there';
 
           if (!conversations[from]) conversations[from] = [];
           
-          // Protect payload structure: strict role alternation
           const lastTurn = conversations[from][conversations[from].length - 1];
           if (!lastTurn || lastTurn.role === 'assistant') {
             conversations[from].push({ role: 'user', content: text });
@@ -322,12 +293,11 @@ const server = http.createServer(async (req, res) => {
 
           sendWhatsAppMessage(from, aiReply);
 
+          // Force continuous analysis on each block so Tier transitions immediately 
           const extractedData = await extractLeadDetails(conversations[from]);
-          if (extractedData.name === "Unknown") extractedData.name = name;
-          extractedData.phone = from;
-          
-          // Triggers our new lookup logic (Update row vs Add row)
-          await saveToGoogleSheets(extractedData);
+
+          // Single clean data block write maps perfectly to 1 line per phone number
+          await saveToGoogleSheets(from, name, conversations[from], extractedData);
 
           sendToMake({
             name: name,
@@ -347,7 +317,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   res.writeHead(200);
-  res.end('Potgieter Auto Sales Bot - Ava is ready!');
+  res.end('Ava Engine Active.');
 });
 
-server.listen(PORT, () => console.log('Ava is live on port ' + PORT));
+server.listen(PORT, () => console.log('Ava live on port ' + PORT));
