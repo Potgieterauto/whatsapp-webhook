@@ -1,4 +1,3 @@
-JavaScript
 const http = require('http');
 const https = require('https');
 const url = require('url');
@@ -46,7 +45,7 @@ function cleanHistoryForGemini(history) {
   return clean;
 }
 
-// --- SAVE OR UPDATE ROW PER CLIENT ---
+// --- SAVE OR UPDATE ROW PER CLIENT (SINGLE-LINE LOGGING ENGINE) ---
 async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
@@ -66,16 +65,16 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
     const clientSheet = doc.sheetsByTitle['Clients'] || doc.sheetsByIndex[0];
     const logSheet = doc.sheetsByTitle['Chat Logs'];
 
-    const rows = await clientSheet.getRows();
+    const clientRows = await clientSheet.getRows();
     const timestamp = new Date().toLocaleString('en-ZA', { timeZone: 'Africa/Johannesburg' });
     
     const latestMessageObj = rawHistory[rawHistory.length - 1];
     const latestText = latestMessageObj?.content || "";
 
-    const existingRow = rows.find(row => String(row.get('Phone')) === String(phone));
+    const existingClientRow = clientRows.find(row => String(row.get('Phone')) === String(phone));
 
     // 1. CRM SUMMARY ENTRY LOGIC (TAB 1: 'Clients')
-    if (existingRow) {
+    if (existingClientRow) {
       console.log(`SHEETS: Updating CRM entry for user: ${phone}`);
       const updatePayload = { 'Date': timestamp };
 
@@ -85,12 +84,12 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
         if (extractedData.condition && extractedData.condition !== "Unknown") updatePayload['Condition'] = extractedData.condition;
         if (extractedData.budget && extractedData.budget !== "Unknown") updatePayload['Budget'] = extractedData.budget;
         if (extractedData.tier) updatePayload['Tier'] = extractedData.tier; 
-      } else if (name && (!existingRow.get('Name') || existingRow.get('Name') === 'Unknown')) {
+      } else if (name && (!existingClientRow.get('Name') || existingClientRow.get('Name') === 'Unknown')) {
         updatePayload['Name'] = name;
       }
 
-      existingRow.assign(updatePayload);
-      await existingRow.save();
+      existingClientRow.assign(updatePayload);
+      await existingClientRow.save();
     } else {
       console.log(`SHEETS: Adding brand new CRM row for: ${phone}`);
       await clientSheet.addRow({
@@ -104,14 +103,32 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       });
     }
 
-    // 2. LIVE CHAT LEDGER APPEND TICKER (TAB 2: 'Chat Logs')
+    // 2. CONSOLIDATED LIVE CHAT LOGIC (TAB 2: 'Chat Logs' -> Updates row in one line!)
     if (logSheet && latestMessageObj) {
-      await logSheet.addRow({
-        'Timestamp': timestamp,
-        'Phone': phone,
-        'Sender': latestMessageObj.role === 'assistant' ? 'Ava' : 'Client',
-        'Message': latestText
-      });
+      const logRows = await logSheet.getRows();
+      const existingLogRow = logRows.find(row => String(row.get('Phone')) === String(phone));
+      const senderLabel = latestMessageObj.role === 'assistant' ? 'Ava' : 'Client';
+      const formattedLogText = `[${senderLabel}]: ${latestText}`;
+
+      if (existingLogRow) {
+        console.log(`SHEETS: Appending text to single-line log for user: ${phone}`);
+        const currentMessages = existingLogRow.get('Message') || "";
+        
+        existingLogRow.assign({
+          'Timestamp': timestamp,
+          'Sender': senderLabel,
+          'Message': currentMessages ? `${currentMessages} | ${formattedLogText}` : formattedLogText
+        });
+        await existingLogRow.save();
+      } else {
+        console.log(`SHEETS: Initializing new single-line log row for user: ${phone}`);
+        await logSheet.addRow({
+          'Timestamp': timestamp,
+          'Phone': phone,
+          'Sender': senderLabel,
+          'Message': formattedLogText
+        });
+      }
     }
 
   } catch (error) {
@@ -304,7 +321,6 @@ const server = http.createServer(async (req, res) => {
             lastTurn.content += ` ${text}`;
           }
 
-          // 1. Fire chat response immediately to ensure user gets high-speed replies
           const aiReply = await getAIResponse(text, conversations[from], name);
           
           if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
@@ -313,8 +329,6 @@ const server = http.createServer(async (req, res) => {
 
           sendWhatsAppMessage(from, aiReply);
 
-          // 2. RATE LIMIT BYPASS: Only run data extraction if the context length is worth analyzing.
-          // This stops empty messages or simple "hi" notes from blowing up your 15 RPM free quota.
           let extractedData = null;
           const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
           
