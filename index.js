@@ -20,7 +20,7 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
-// Helper utility to make sure history array structure alternates perfectly for Gemini
+// Helper utility to clean chat history for Gemini API
 function cleanHistoryForGemini(history) {
   const clean = [];
   let expectedRole = 'user';
@@ -75,7 +75,6 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
 
     // 1. CRM SUMMARY ENTRY LOGIC (TAB 1: 'Clients')
     if (existingClientRow) {
-      console.log(`SHEETS: Updating CRM entry for user: ${phone}`);
       const updatePayload = { 'Date': timestamp };
 
       if (extractedData) {
@@ -91,7 +90,6 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       existingClientRow.assign(updatePayload);
       await existingClientRow.save();
     } else {
-      console.log(`SHEETS: Adding brand new CRM row for: ${phone}`);
       await clientSheet.addRow({
         'Date': timestamp,
         'Name': extractedData?.name || name || 'Unknown',
@@ -103,7 +101,7 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       });
     }
 
-    // 2. CONSOLIDATED LIVE CHAT LOGIC (TAB 2: 'Chat Logs' -> Updates row in one line!)
+    // 2. CONSOLIDATED LIVE CHAT LOGIC (TAB 2: 'Chat Logs')
     if (logSheet && latestMessageObj) {
       const logRows = await logSheet.getRows();
       const existingLogRow = logRows.find(row => String(row.get('Phone')) === String(phone));
@@ -111,9 +109,7 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       const formattedLogText = `[${senderLabel}]: ${latestText}`;
 
       if (existingLogRow) {
-        console.log(`SHEETS: Appending text to single-line log for user: ${phone}`);
         const currentMessages = existingLogRow.get('Message') || "";
-        
         existingLogRow.assign({
           'Timestamp': timestamp,
           'Sender': senderLabel,
@@ -121,7 +117,6 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
         });
         await existingLogRow.save();
       } else {
-        console.log(`SHEETS: Initializing new single-line log row for user: ${phone}`);
         await logSheet.addRow({
           'Timestamp': timestamp,
           'Phone': phone,
@@ -132,14 +127,12 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
     }
 
   } catch (error) {
-    console.error("SHEETS ERROR: Failed row execution:", error);
+    console.error("SHEETS ASYNC ERROR:", error.message || error);
   }
 }
 
 // --- OPTIMIZED SMART EXTRACTION CALL ---
 async function extractLeadDetails(history) {
-  console.log("RUNNING LEAD ANALYSIS AND TIERING...");
-  
   const analysisPrompt = `Analyze the conversation history between a car sales agent and a customer. Extract the following information into raw JSON format.
 If an explicit answer isn't present in the chat for a field, put "Unknown".
 For "Condition", it must strictly be: "New", "Used", "Demo", or "Unknown".
@@ -212,6 +205,7 @@ function sendWhatsAppMessage(to, message) {
     res.on('data', chunk => body += chunk);
     res.on('end', () => {});
   });
+  req.on('error', (err) => console.error("WHATSAPP SEND ERROR:", err.message));
   req.write(data);
   req.end();
 }
@@ -219,16 +213,21 @@ function sendWhatsAppMessage(to, message) {
 // --- SEND TO MAKE ---
 function sendToMake(data) {
   if (!MAKE_WEBHOOK_URL) return;
-  const makeUrl = new URL(MAKE_WEBHOOK_URL);
-  const options = {
-    hostname: makeUrl.hostname,
-    path: makeUrl.pathname,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
-  };
-  const req = https.request(options);
-  req.write(JSON.stringify(data));
-  req.end();
+  try {
+    const makeUrl = new URL(MAKE_WEBHOOK_URL);
+    const options = {
+      hostname: makeUrl.hostname,
+      path: makeUrl.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+    const req = https.request(options);
+    req.on('error', (err) => console.error("MAKE WEBHOOK ERROR:", err.message));
+    req.write(JSON.stringify(data));
+    req.end();
+  } catch (err) {
+    console.error("MAKE URL PARSE ERROR:", err.message);
+  }
 }
 
 // --- GET AI RESPONSE ---
@@ -264,7 +263,7 @@ Keep messages short and conversational. Use emojis occasionally. Speak naturally
       res.on('end', () => {
         try {
           if (res.statusCode !== 200) {
-            console.log("GEMINI API REJECTION ERROR STATUS:", res.statusCode);
+            console.log("GEMINI API ERROR STATUS:", res.statusCode);
             resolve("Sorry, I'm having a brief look at our stock system. Give me one moment!");
             return;
           }
@@ -285,6 +284,7 @@ Keep messages short and conversational. Use emojis occasionally. Speak naturally
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
+  // Webhook Verification (Meta WhatsApp setup)
   if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
     const mode = parsedUrl.query['hub.mode'];
     const token = parsedUrl.query['hub.verify_token'];
@@ -299,10 +299,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Incoming WhatsApp Message Handler
   if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
+      // Always acknowledge Meta instantly with 200 OK
+      res.writeHead(200);
+      res.end('OK');
+
       try {
         const payload = JSON.parse(body);
         const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
@@ -321,6 +326,7 @@ const server = http.createServer(async (req, res) => {
             lastTurn.content += ` ${text}`;
           }
 
+          // 1. Get AI response and send to WhatsApp immediately
           const aiReply = await getAIResponse(text, conversations[from], name);
           
           if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
@@ -329,28 +335,30 @@ const server = http.createServer(async (req, res) => {
 
           sendWhatsAppMessage(from, aiReply);
 
-          let extractedData = null;
-          const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
-          
-          if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
-            extractedData = await extractLeadDetails(conversations[from]);
-          }
+          // 2. Fire-and-forget background tasks (Sheets + Make webhook)
+          (async () => {
+            let extractedData = null;
+            const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
+            
+            // Analyze lead details every 2 user messages to protect rate limits
+            if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
+              extractedData = await extractLeadDetails(conversations[from]);
+            }
 
-          await saveToGoogleSheets(from, name, conversations[from], extractedData);
+            await saveToGoogleSheets(from, name, conversations[from], extractedData);
 
-          sendToMake({
-            name: name,
-            phone: from,
-            last_message: text,
-            ai_response: aiReply,
-            timestamp: new Date().toISOString()
-          });
+            sendToMake({
+              name: name,
+              phone: from,
+              last_message: text,
+              ai_response: aiReply,
+              timestamp: new Date().toISOString()
+            });
+          })();
         }
       } catch (e) {
         console.log("WEBHOOK PROCESSING ERROR:", e);
       }
-      res.writeHead(200);
-      res.end('OK');
     });
     return;
   }
