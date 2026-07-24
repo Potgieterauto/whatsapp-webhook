@@ -230,8 +230,8 @@ function sendToMake(data) {
   }
 }
 
-// --- GET AI RESPONSE ---
-async function getAIResponse(userMessage, history, userName) {
+// --- GET AI RESPONSE (WITH AUTOMATIC RETRY ON 503 OVERLOAD) ---
+async function getAIResponse(userMessage, history, userName, retries = 2) {
   const systemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
 1. Their budget
 2. Whether they want new or used
@@ -260,8 +260,16 @@ Keep messages short and conversational. Use emojis occasionally. Speak naturally
     const req = https.request(options, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
-      res.on('end', () => {
+      res.on('end', async () => {
         try {
+          if (res.statusCode === 503 && retries > 0) {
+            console.log(`GEMINI 503 DETECTED: Retrying in 1.5 seconds... (${retries} retries left)`);
+            await new Promise(r => setTimeout(r, 1500));
+            const retryResponse = await getAIResponse(userMessage, history, userName, retries - 1);
+            resolve(retryResponse);
+            return;
+          }
+
           if (res.statusCode !== 200) {
             console.log("GEMINI API ERROR STATUS:", res.statusCode);
             resolve("Sorry, I'm having a brief look at our stock system. Give me one moment!");
@@ -284,7 +292,6 @@ Keep messages short and conversational. Use emojis occasionally. Speak naturally
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
-  // Webhook Verification (Meta WhatsApp setup)
   if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
     const mode = parsedUrl.query['hub.mode'];
     const token = parsedUrl.query['hub.verify_token'];
@@ -299,12 +306,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Incoming WhatsApp Message Handler
   if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', async () => {
-      // Always acknowledge Meta instantly with 200 OK
       res.writeHead(200);
       res.end('OK');
 
@@ -326,7 +331,6 @@ const server = http.createServer(async (req, res) => {
             lastTurn.content += ` ${text}`;
           }
 
-          // 1. Get AI response and send to WhatsApp immediately
           const aiReply = await getAIResponse(text, conversations[from], name);
           
           if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
@@ -335,12 +339,10 @@ const server = http.createServer(async (req, res) => {
 
           sendWhatsAppMessage(from, aiReply);
 
-          // 2. Fire-and-forget background tasks (Sheets + Make webhook)
           (async () => {
             let extractedData = null;
             const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
             
-            // Analyze lead details every 2 user messages to protect rate limits
             if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
               extractedData = await extractLeadDetails(conversations[from]);
             }
