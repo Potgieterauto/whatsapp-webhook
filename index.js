@@ -85,4 +85,287 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
         'Name': extractedData?.name || name || 'Unknown',
         'Phone': phone,
         'Vehicle': extractedData?.vehicle || 'Unknown',
-        'Condition': extractedData
+        'Condition': extractedData?.condition || 'Unknown',
+        'Budget': extractedData?.budget || 'Unknown',
+        'Tier': extractedData?.tier || 'Warm'
+      });
+    }
+
+    if (logSheet && latestMessageObj) {
+      const logRows = await logSheet.getRows();
+      const existingLogRow = logRows.find(row => String(row.get('Phone')) === String(phone));
+      const senderLabel = latestMessageObj.role === 'assistant' ? 'Ava' : 'Client';
+      const formattedLogText = `[${senderLabel}]: ${latestText}`;
+
+      if (existingLogRow) {
+        const currentMessages = existingLogRow.get('Message') || "";
+        existingLogRow.assign({
+          'Timestamp': timestamp,
+          'Sender': senderLabel,
+          'Message': currentMessages ? `${currentMessages} | ${formattedLogText}` : formattedLogText
+        });
+        await existingLogRow.save();
+      } else {
+        await logSheet.addRow({
+          'Timestamp': timestamp,
+          'Phone': phone,
+          'Sender': senderLabel,
+          'Message': formattedLogText
+        });
+      }
+    }
+  } catch (error) {
+    console.error("SHEETS ERROR:", error.message);
+  }
+}
+
+async function fetchLeadsFromGoogleSheets() {
+  try {
+    if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) return [];
+    
+    const serviceAccountAuth = new JWT({
+      email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      key: GOOGLE_PRIVATE_KEY,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+    
+    const doc = new GoogleSpreadsheet(SPREADSHEET_ID, serviceAccountAuth);
+    await doc.loadInfo();
+    const clientSheet = doc.sheetsByTitle['Clients'] || doc.sheetsByIndex[0];
+    const rows = await clientSheet.getRows();
+    
+    return rows.map(row => ({
+      timestamp: row.get('Date') || '',
+      name: row.get('Name') || 'Unknown',
+      phone: row.get('Phone') || '',
+      vehicle: row.get('Vehicle') || 'Unknown',
+      condition: row.get('Condition') || 'Unknown',
+      budget: row.get('Budget') || 'Unknown',
+      tier: row.get('Tier') || 'Warm'
+    }));
+  } catch (error) {
+    return [];
+  }
+}
+
+async function extractLeadDetails(history) {
+  const analysisPrompt = `Analyze the conversation history between a car sales agent and a customer. Extract the following information into raw JSON format.
+If an explicit answer isn't present in the chat for a field, put "Unknown".
+For "Condition", it must strictly be: "New", "Used", "Demo", or "Unknown".
+For "Tier", categorize the lead as exactly "Hot", "Warm", or "Cold". Do not choose anything else.
+
+Provide ONLY raw JSON matching this template without markdown code fences:
+{
+  "name": "Customer Name",
+  "vehicle": "Make/Model Preference",
+  "condition": "New/Used/Demo/Unknown",
+  "budget": "Budget details",
+  "tier": "Hot/Warm/Cold"
+}`;
+
+  const geminiContents = cleanHistoryForGemini(history);
+  if (geminiContents.length === 0) return null;
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          const jsonText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!jsonText) {
+            resolve(null);
+            return;
+          }
+          resolve(JSON.parse(jsonText.trim()));
+        } catch (e) {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.write(JSON.stringify({
+      contents: geminiContents,
+      systemInstruction: { parts: [{ text: analysisPrompt }] },
+      generationConfig: { responseMimeType: "application/json" }
+    }));
+    req.end();
+  });
+}
+
+function sendWhatsAppMessage(to, message) {
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) return;
+  const data = JSON.stringify({ messaging_product: 'whatsapp', to: to, type: 'text', text: { body: message } });
+  
+  const options = {
+    hostname: 'graph.facebook.com',
+    path: `/v17.0/${PHONE_NUMBER_ID}/messages`,
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' }
+  };
+  
+  const req = https.request(options);
+  req.on('error', () => {});
+  req.write(data);
+  req.end();
+}
+
+function sendToMake(data) {
+  if (!MAKE_WEBHOOK_URL) return;
+  try {
+    const makeUrl = new URL(MAKE_WEBHOOK_URL);
+    const options = {
+      hostname: makeUrl.hostname,
+      path: makeUrl.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+    const req = https.request(options);
+    req.on('error', () => {});
+    req.write(JSON.stringify(data));
+    req.end();
+  } catch (err) {}
+}
+
+async function getAIResponse(history) {
+  const geminiContents = cleanHistoryForGemini(history);
+  const data = JSON.stringify({
+    contents: geminiContents,
+    systemInstruction: { parts: [{ text: currentSystemPrompt }] },
+    generationConfig: { maxOutputTokens: 512 }
+  });
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          const replyText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          resolve(replyText ? replyText.trim() : "Sorry, let me check that info for you.");
+        } catch (e) {
+          resolve("Sorry, I'm checking that info for you right now.");
+        }
+      });
+    });
+    req.on('error', () => resolve("Sorry, let me look into that for you."));
+    req.write(data);
+    req.end();
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const parsedUrl = url.parse(req.url, true);
+
+  if (parsedUrl.pathname === '/api/leads' && req.method === 'GET') {
+    const leads = await fetchLeadsFromGoogleSheets();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(leads));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/send-message' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.phone && parsed.message) {
+          sendWhatsAppMessage(parsed.phone, parsed.message);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: "Missing fields" }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: "Invalid JSON" }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
+    const mode = parsedUrl.query['hub.mode'];
+    const token = parsedUrl.query['hub.verify_token'];
+    const challenge = parsedUrl.query['hub.challenge'];
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      res.writeHead(200);
+      res.end(challenge);
+    } else {
+      res.writeHead(403);
+      res.end('Forbidden');
+    }
+    return;
+  }
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      res.writeHead(200);
+      res.end('OK');
+      try {
+        const payload = JSON.parse(body);
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        if (message && message.type === 'text') {
+          const from = message.from;
+          const text = message.text.body;
+          const name = payload.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name || 'there';
+
+          if (!conversations[from]) conversations[from] = [];
+          conversations[from].push({ role: 'user', content: text });
+
+          const aiReply = await getAIResponse(conversations[from]);
+          conversations[from].push({ role: 'assistant', content: aiReply });
+          sendWhatsAppMessage(from, aiReply);
+
+          (async () => {
+            try {
+              let extractedData = null;
+              const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
+              if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
+                extractedData = await extractLeadDetails(conversations[from]);
+              }
+              await saveToGoogleSheets(from, name, conversations[from], extractedData);
+              sendToMake({ name, phone: from, last_message: text, ai_response: aiReply, timestamp: new Date().toISOString() });
+            } catch (err) {}
+          })();
+        }
+      } catch (e) {}
+    });
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Ava Engine Active & Connected.');
+});
+
+server.listen(PORT, () => console.log('Ava live on port ' + PORT));
+// --- END OF FILE ---
