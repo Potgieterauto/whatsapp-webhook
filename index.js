@@ -37,7 +37,7 @@ function cleanHistoryForGemini(history) {
   let expectedRole = 'user';
 
   for (const msg of history) {
-    if (!msg || !msg.content || msg.content.trim() === '') continue;
+    if (!msg || !msg.content || typeof msg.content !== 'string' || msg.content.trim() === '') continue;
     
     const currentRole = msg.role === 'assistant' ? 'model' : 'user';
 
@@ -60,7 +60,7 @@ function cleanHistoryForGemini(history) {
 async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null) {
   try {
     if (!SPREADSHEET_ID || !GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_PRIVATE_KEY) {
-      console.log("SHEETS ERROR: Missing credentials in environment variables.");
+      console.log("SHEETS WARNING: Missing Google Sheets credentials in environment variables.");
       return;
     }
 
@@ -117,14 +117,14 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       const logRows = await logSheet.getRows();
       const existingLogRow = logRows.find(row => String(row.get('Phone')) === String(phone));
       const senderLabel = latestMessageObj.role === 'assistant' ? 'Ava' : 'Client';
-      const formattedLogText = `[${senderLabel}]:${latestText}`;
+      const formattedLogText = `[${senderLabel}]: ${latestText}`;
 
       if (existingLogRow) {
         const currentMessages = existingLogRow.get('Message') || "";
         existingLogRow.assign({
           'Timestamp': timestamp,
           'Sender': senderLabel,
-          'Message': currentMessages ? `${currentMessages} \vert{}${formattedLogText}` : formattedLogText
+          'Message': currentMessages ? `${currentMessages} | ${formattedLogText}` : formattedLogText
         });
         await existingLogRow.save();
       } else {
@@ -176,4 +176,65 @@ async function fetchLeadsFromGoogleSheets() {
 
 // --- OPTIMIZED SMART EXTRACTION CALL ---
 async function extractLeadDetails(history) {
-  const analysisPrompt = `Analyze the conversation history between a car sales agent and a
+  const analysisPrompt = `Analyze the conversation history between a car sales agent and a customer. Extract the following information into raw JSON format.
+If an explicit answer isn't present in the chat for a field, put "Unknown".
+For "Condition", it must strictly be: "New", "Used", "Demo", or "Unknown".
+For "Tier", categorize the lead as exactly "Hot", "Warm", or "Cold". Do not choose anything else.
+
+Provide ONLY raw JSON matching this template without markdown code fences:
+{
+  "name": "Customer Name",
+  "vehicle": "Make/Model Preference",
+  "condition": "New/Used/Demo/Unknown",
+  "budget": "Budget details",
+  "tier": "Hot/Warm/Cold"
+}`;
+
+  const geminiContents = cleanHistoryForGemini(history);
+  if (geminiContents.length === 0) return null;
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          const jsonText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!jsonText) {
+            resolve(null);
+            return;
+          }
+          resolve(JSON.parse(jsonText.trim()));
+        } catch (e) {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.write(JSON.stringify({
+      contents: geminiContents,
+      systemInstruction: { parts: [{ text: analysisPrompt }] },
+      generationConfig: { responseMimeType: "application/json" }
+    }));
+    req.end();
+  });
+}
+
+// --- SEND WHATSAPP MESSAGE ---
+function sendWhatsAppMessage(to, message) {
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+    console.error("WHATSAPP ERROR: Missing token or phone number ID configuration.");
+    return;
+  }
+
+  const data = JSON.stringify({
+    messaging_product: 'whatsapp',
+    to
