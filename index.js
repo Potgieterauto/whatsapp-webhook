@@ -201,9 +201,26 @@ Provide ONLY raw JSON matching this template without markdown code fences:
   });
 }
 
-function sendWhatsAppMessage(to, message) {
+// Flexible sender handling both custom text and official templates
+function sendWhatsAppMessage(to, message, templateName = null) {
   if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) return;
-  const data = JSON.stringify({ messaging_product: 'whatsapp', to: to, type: 'text', text: { body: message } });
+
+  const payload = templateName ? {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: 'en_US' }
+    }
+  } : {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'text',
+    text: { body: message }
+  };
+
+  const data = JSON.stringify(payload);
   
   const options = {
     hostname: 'graph.facebook.com',
@@ -213,7 +230,7 @@ function sendWhatsAppMessage(to, message) {
   };
   
   const req = https.request(options);
-  req.on('error', () => {});
+  req.on('error', (err) => console.error("WHATSAPP SEND ERROR:", err.message));
   req.write(data);
   req.end();
 }
@@ -295,13 +312,14 @@ const server = http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const parsed = JSON.parse(body);
-        if (parsed.phone && parsed.message) {
-          sendWhatsAppMessage(parsed.phone, parsed.message);
+        if (parsed.phone) {
+          const templateName = parsed.useTemplate ? (parsed.templateName || 'hello_world') : null;
+          sendWhatsAppMessage(parsed.phone, parsed.message || '', templateName);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true }));
         } else {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: false, error: "Missing fields" }));
+          res.end(JSON.stringify({ success: false, error: "Missing phone number" }));
         }
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
