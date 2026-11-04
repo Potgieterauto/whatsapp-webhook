@@ -237,4 +237,85 @@ function sendWhatsAppMessage(to, message) {
 
   const data = JSON.stringify({
     messaging_product: 'whatsapp',
-    to
+    to: to,
+    type: 'text',
+    text: { body: message }
+  });
+
+  const options = {
+    hostname: 'graph.facebook.com',
+    path: `/v17.0/${PHONE_NUMBER_ID}/messages`,
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  const req = https.request(options, (res) => {
+    let body = '';
+    res.on('data', chunk => body += chunk);
+    res.on('end', () => {
+      if (res.statusCode !== 200) {
+        console.error("WHATSAPP API STATUS ERROR:", res.statusCode, body);
+      }
+    });
+  });
+  req.on('error', (err) => console.error("WHATSAPP SEND ERROR:", err.message));
+  req.write(data);
+  req.end();
+}
+
+// --- SEND TO MAKE ---
+function sendToMake(data) {
+  if (!MAKE_WEBHOOK_URL) return;
+  try {
+    const makeUrl = new URL(MAKE_WEBHOOK_URL);
+    const options = {
+      hostname: makeUrl.hostname,
+      path: makeUrl.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+    const req = https.request(options);
+    req.on('error', (err) => console.error("MAKE WEBHOOK ERROR:", err.message));
+    req.write(JSON.stringify(data));
+    req.end();
+  } catch (err) {
+    console.error("MAKE URL PARSE ERROR:", err.message);
+  }
+}
+
+// --- GET AI RESPONSE (WITH AUTOMATIC RETRY ON 503 OVERLOAD) ---
+async function getAIResponse(userMessage, history, userName, retries = 2) {
+  let contextualSystemPrompt = currentSystemPrompt;
+  if (knowledgeBaseDocuments.length > 0) {
+    contextualSystemPrompt += `\n\nReference Knowledge Base Documents:\n` + knowledgeBaseDocuments.join('\n\n');
+  }
+
+  const geminiContents = cleanHistoryForGemini(history);
+
+  const data = JSON.stringify({
+    contents: geminiContents,
+    systemInstruction: { parts: [{ text: contextualSystemPrompt }] },
+    generationConfig: { maxOutputTokens: 512 }
+  });
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'generativelanguage.googleapis.com',
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', async () => {
+        try {
+          if (res.statusCode === 503 && retries > 0) {
+            console.log(`GEMINI 503 DETECTED: Retrying in 1.5 seconds... (${retries} retries left)`);
+            await new Promise(r => setTimeout(r, 1500));
+            const retryResponse = await getAIResponse(userMessage, history, userName, retries - 1);
+            resolve(retryResponse);
