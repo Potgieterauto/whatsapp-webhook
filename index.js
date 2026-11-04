@@ -20,7 +20,6 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
 const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL;
 const conversations = {};
 
-// In-memory store for dashboard knowledge base & system prompt overrides
 let currentSystemPrompt = `You are Ava, an expert car sales agent at Potgieter Auto, a dealership in South Africa selling new and used vehicles. You are friendly, professional, and helpful. Your goal is to qualify leads by finding out:
 1. Their budget
 2. Whether they want new or used
@@ -118,14 +117,14 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
       const logRows = await logSheet.getRows();
       const existingLogRow = logRows.find(row => String(row.get('Phone')) === String(phone));
       const senderLabel = latestMessageObj.role === 'assistant' ? 'Ava' : 'Client';
-      const formattedLogText = `[${senderLabel}]:${latestText}`;
+      const formattedLogText = `[${senderLabel}]: ${latestText}`;
 
       if (existingLogRow) {
         const currentMessages = existingLogRow.get('Message') || "";
         existingLogRow.assign({
           'Timestamp': timestamp,
           'Sender': senderLabel,
-          'Message': currentMessages ? `${currentMessages} \vert{}${formattedLogText}` : formattedLogText
+          'Message': currentMessages ? `${currentMessages} | ${formattedLogText}` : formattedLogText
         });
         await existingLogRow.save();
       } else {
@@ -137,7 +136,6 @@ async function saveToGoogleSheets(phone, name, rawHistory, extractedData = null)
         });
       }
     }
-
   } catch (error) {
     console.error("SHEETS ASYNC ERROR:", error.message || error);
   }
@@ -204,7 +202,10 @@ function sendWhatsAppMessage(to, message) {
 
   const options = {
     hostname: 'graph.facebook.com',
-    path: `/v17.0/${PHONE_NUMBER_ID}/messages`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+    path: `/v17.0/${PHONE_NUMBER_ID}/messages`,
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
       'Content-Type': 'application/json'
     }
   };
@@ -257,4 +258,181 @@ async function getAIResponse(userMessage, history, userName, retries = 2) {
   return new Promise((resolve) => {
     const options = {
       hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.5-flash
+      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', async () => {
+        try {
+          if (res.statusCode === 503 && retries > 0) {
+            console.log(`GEMINI 503 DETECTED: Retrying in 1.5 seconds... (${retries} retries left)`);
+            await new Promise(r => setTimeout(r, 1500));
+            const retryResponse = await getAIResponse(userMessage, history, userName, retries - 1);
+            resolve(retryResponse);
+            return;
+          }
+
+          if (res.statusCode !== 200) {
+            console.log("GEMINI API ERROR STATUS:", res.statusCode);
+            resolve("Sorry, I'm having a brief look at our stock system. Give me one moment!");
+            return;
+          }
+          const parsed = JSON.parse(body);
+          resolve(parsed.candidates[0].content.parts[0].text.trim());
+        } catch (e) {
+          resolve("Sorry, I'm checking that info for you right now.");
+        }
+      });
+    });
+    req.on('error', () => resolve("Sorry, let me look into that for you."));
+    req.write(data);
+    req.end();
+  });
+}
+
+// --- MAIN WEBHOOK & DASHBOARD API ENGINE ---
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const parsedUrl = url.parse(req.url, true);
+
+  if (parsedUrl.pathname === '/api/contacts' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ conversations }));
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/prompt' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.prompt) {
+          currentSystemPrompt = parsed.prompt;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: "Prompt updated successfully" }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: "Missing prompt field" }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: "Invalid JSON" }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/api/knowledge/upload' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed.content) {
+          knowledgeBaseDocuments.push(parsed.content);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: "Knowledge base updated" }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: "Missing content" }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: "Invalid JSON" }));
+      }
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'GET') {
+    const mode = parsedUrl.query['hub.mode'];
+    const token = parsedUrl.query['hub.verify_token'];
+    const challenge = parsedUrl.query['hub.challenge'];
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      res.writeHead(200);
+      res.end(challenge);
+    } else {
+      res.writeHead(403);
+      res.end('Forbidden');
+    }
+    return;
+  }
+
+  if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      res.writeHead(200);
+      res.end('OK');
+
+      try {
+        const payload = JSON.parse(body);
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+        if (message && message.type === 'text') {
+          const from = message.from;
+          const text = message.text.body;
+          const name = payload.entry?.[0]?.changes?.[0]?.value?.contacts?.[0]?.profile?.name || 'there';
+
+          if (!conversations[from]) conversations[from] = [];
+          
+          const lastTurn = conversations[from][conversations[from].length - 1];
+          if (!lastTurn || lastTurn.role === 'assistant') {
+            conversations[from].push({ role: 'user', content: text });
+          } else if (lastTurn && lastTurn.role === 'user') {
+            lastTurn.content += ` ${text}`;
+          }
+
+          const aiReply = await getAIResponse(text, conversations[from], name);
+          
+          if (!aiReply.includes("stock system") && !aiReply.includes("checking that info")) {
+            conversations[from].push({ role: 'assistant', content: aiReply });
+          }
+
+          sendWhatsAppMessage(from, aiReply);
+
+          (async () => {
+            let extractedData = null;
+            const userTurnsCount = conversations[from].filter(m => m.role === 'user').length;
+            
+            if (userTurnsCount >= 2 && userTurnsCount % 2 === 0) {
+              extractedData = await extractLeadDetails(conversations[from]);
+            }
+
+            await saveToGoogleSheets(from, name, conversations[from], extractedData);
+
+            sendToMake({
+              name: name,
+              phone: from,
+              last_message: text,
+              ai_response: aiReply,
+              timestamp: new Date().toISOString()
+            });
+          })();
+        }
+      } catch (e) {
+        console.log("WEBHOOK PROCESSING ERROR:", e);
+      }
+    });
+    return;
+  }
+
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Ava Engine Active & Connected.');
+});
+
+server.listen(PORT, () => console.log('Ava live on port ' + PORT));
