@@ -12,10 +12,10 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WABA_ID = process.env.WABA_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// --- PERSISTENT RENDER DISK SETUP ---
+// --- BULLETPROOF RENDER PERSISTENT DISK SETUP ---
 const dataDir = fs.existsSync('/data') ? '/data' : __dirname;
 const dbFile = path.join(dataDir, 'avadb.sqlite');
-console.log('Using database path:', dbFile);
+console.log('Using permanent database path:', dbFile);
 
 const db = new sqlite3.Database(dbFile);
 
@@ -46,7 +46,6 @@ function saveSetting(key, value) {
   });
 }
 
-// --- UPDATED: FETCHES PROPER CLIENT NAMES ---
 function getConversationsFromDB() {
   return new Promise((resolve) => {
     db.all(`SELECT phone, name FROM leads`, [], (err, leadRows) => {
@@ -184,7 +183,7 @@ const server = http.createServer(async (req, res) => {
         }
       }
       
-      res.writeHead(200); return res.end("MIGRATION SUCCESSFUL! You can go check your CRM Dashboard now. All historical Google Sheets data is safely loaded into the new SQLite database.");
+      res.writeHead(200); return res.end("MIGRATION SUCCESSFUL! Historical data safely loaded into permanent SQLite storage.");
     } catch (e) {
       res.writeHead(500); return res.end("ERROR: " + e.message);
     }
@@ -310,30 +309,3 @@ const server = http.createServer(async (req, res) => {
       res.end('OK');
       try {
         const payload = JSON.parse(b);
-        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-        if (message && message.type === 'text') {
-          const f = message.from;
-          const t = message.text.body;
-          const n = payload.entry[0].changes[0].value.contacts[0].profile.name || 'there';
-          const ts = new Date().toISOString();
-
-          db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, [f, ts, t]);
-
-          db.all(`SELECT sender, message FROM chat_logs WHERE phone = ? ORDER BY timestamp ASC`, [f], async (err, rows) => {
-            const history = (rows || []).map(r => ({ role: r.sender === 'Client' ? 'user' : 'assistant', content: r.message }));
-            const rep = await getAIResponse(history);
-
-            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [f, ts, rep]);
-            sendWhatsAppMessage(f, rep);
-          });
-        }
-      } catch (e) { }
-    });
-    return;
-  }
-
-  res.writeHead(200);
-  res.end('Ava Bulletproof Persistent SQLite Engine Active');
-});
-
-server.listen(PORT, () => console.log('Ava Persistent Engine live on port ' + PORT));
