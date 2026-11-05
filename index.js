@@ -46,18 +46,33 @@ function saveSetting(key, value) {
   });
 }
 
+// --- UPDATED: FETCHES PROPER CLIENT NAMES ---
 function getConversationsFromDB() {
   return new Promise((resolve) => {
-    db.all(`SELECT phone, timestamp, sender, message FROM chat_logs ORDER BY timestamp ASC`, [], (err, rows) => {
-      if (err || !rows) { resolve({}); return; }
-      const conversations = {};
-      rows.forEach(r => {
-        if (!conversations[r.phone]) { conversations[r.phone] = { phone: r.phone, messages: [], lastUpdated: r.timestamp }; }
-        const role = r.sender === 'Client' ? 'user' : 'assistant';
-        conversations[r.phone].messages.push({ role, sender: r.sender, content: r.message });
-        conversations[r.phone].lastUpdated = r.timestamp;
+    db.all(`SELECT phone, name FROM leads`, [], (err, leadRows) => {
+      const nameMap = {};
+      if (leadRows) {
+        leadRows.forEach(l => nameMap[l.phone] = l.name);
+      }
+      
+      db.all(`SELECT phone, timestamp, sender, message FROM chat_logs ORDER BY timestamp ASC`, [], (err, rows) => {
+        if (err || !rows) { resolve({}); return; }
+        const conversations = {};
+        rows.forEach(r => {
+          if (!conversations[r.phone]) { 
+            conversations[r.phone] = { 
+              phone: r.phone, 
+              name: nameMap[r.phone] || 'Client',
+              messages: [], 
+              lastUpdated: r.timestamp 
+            }; 
+          }
+          const role = r.sender === 'Client' ? 'user' : 'assistant';
+          conversations[r.phone].messages.push({ role, sender: r.sender, content: r.message });
+          conversations[r.phone].lastUpdated = r.timestamp;
+        });
+        resolve(conversations);
       });
-      resolve(conversations);
     });
   });
 }
