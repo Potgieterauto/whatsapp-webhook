@@ -118,6 +118,63 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   const pUrl = url.parse(req.url, true);
 
+  // --- GOOGLE SHEETS MIGRATION SCRIPT ---
+  if (pUrl.pathname === '/api/migrate' && req.method === 'GET') {
+    try {
+      const { GoogleSpreadsheet } = require('google-spreadsheet');
+      const { JWT } = require('google-auth-library');
+      
+      const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+      const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+      const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '').trim() : undefined;
+      
+      if (!SPREADSHEET_ID) {
+        res.writeHead(400); return res.end("Missing SPREADSHEET_ID in Render Environment Variables.");
+      }
+
+      const auth = new JWT({ email: GOOGLE_SERVICE_ACCOUNT_EMAIL, key: GOOGLE_PRIVATE_KEY, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+      const doc = new GoogleSpreadsheet(SPREADSHEET_ID, auth);
+      await doc.loadInfo();
+      
+      const clientSheet = doc.sheetsByTitle['Clients'] || doc.sheetsByIndex[0];
+      if (clientSheet) {
+        const rows = await clientSheet.getRows();
+        for (const r of rows) {
+          const phone = r.get('Phone');
+          if (phone) {
+            db.run(`INSERT OR IGNORE INTO leads (phone, timestamp, name, vehicle, condition, budget, tier) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              [phone, r.get('Date'), r.get('Name'), r.get('Vehicle'), r.get('Condition'), r.get('Budget'), r.get('Tier') || 'Warm']);
+          }
+        }
+      }
+      
+      const logSheet = doc.sheetsByTitle['Chat Logs'];
+      if (logSheet) {
+        const rows = await logSheet.getRows();
+        for (const r of rows) {
+          const phone = r.get('Phone');
+          const msgText = r.get('Message');
+          let ts = r.get('Timestamp') || new Date().toISOString();
+          if (phone && msgText) {
+            const splitMsgs = msgText.split('|');
+            for (const m of splitMsgs) {
+              let txt = m.trim();
+              let sender = 'Client';
+              let content = txt;
+              if (txt.startsWith('[Ava]:')) { sender = 'Ava'; content = txt.replace('[Ava]:','').trim(); }
+              else if (txt.startsWith('[Client]:')) { sender = 'Client'; content = txt.replace('[Client]:','').trim(); }
+              db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, ?, ?)`, [phone, ts, sender, content]);
+            }
+          }
+        }
+      }
+      
+      res.writeHead(200); return res.end("MIGRATION SUCCESSFUL! You can go check your CRM Dashboard now. All historical Google Sheets data is safely loaded into the new SQLite database.");
+    } catch (e) {
+      res.writeHead(500); return res.end("ERROR: " + e.message);
+    }
+  }
+
   if (pUrl.pathname === '/api/leads' && req.method === 'GET') {
     db.all(`SELECT timestamp, name, phone, vehicle, condition, budget, tier FROM leads ORDER BY timestamp DESC`, [], (err, rows) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
