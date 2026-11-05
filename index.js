@@ -247,6 +247,45 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // --- WEBSITE LEAD FORM API ENDPOINT ---
+  if (pUrl.pathname === '/api/leads' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body);
+        if (!payload.name || !payload.phone) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ success: false, error: "Name and phone are required." }));
+        }
+
+        const ts = new Date().toISOString();
+        const tier = payload.tier || 'Warm';
+
+        db.run(
+          `INSERT OR REPLACE INTO leads (phone, timestamp, name, vehicle, condition, budget, tier) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [payload.phone, ts, payload.name, payload.vehicle || 'Not Specified', payload.condition || 'New/Used', payload.budget || 'Not Specified', tier],
+          (err) => {
+            if (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              return res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+
+            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, 
+              [payload.phone, ts, `[Website Enquiry - Vehicle: ${payload.vehicle || 'General'}] ${payload.message || ''}`]);
+
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, message: 'Lead saved successfully and synced to CRM' }));
+          }
+        );
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: "Invalid JSON payload" }));
+      }
+    });
+    return;
+  }
+
   if (pUrl.pathname === '/api/leads' && req.method === 'GET') {
     db.all(`SELECT timestamp, name, phone, vehicle, condition, budget, tier FROM leads ORDER BY timestamp DESC`, [], (err, rows) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
