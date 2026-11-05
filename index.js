@@ -72,40 +72,6 @@ function cleanHistoryForGemini(history) {
   return clean;
 }
 
-async function extractLeadDetails(history) {
-  const p = `Analyze conversation. Extract JSON. Fields: name, vehicle, condition (New/Used/Demo/Unknown), budget, tier (Hot/Warm/Cold). Unknown if missing. Raw JSON only.`;
-  const contents = cleanHistoryForGemini(history);
-  if (!contents.length) return null;
-  return new Promise(r => {
-    const req = https.request({
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
-    }, res => {
-      let b = '';
-      res.on('data', c => b += c);
-      res.on('end', () => {
-        try {
-          r(JSON.parse(JSON.parse(b).candidates[0].content.parts[0].text.trim()));
-        } catch (e) { r(null); }
-      });
-    });
-    req.on('error', () => r(null));
-    req.write(JSON.stringify({ contents, systemInstruction: { parts: [{ text: p }] }, generationConfig: { responseMimeType: "application/json" } }));
-    req.end();
-  });
-}
-
-function sendWhatsAppMessage(to, msg, tmpl = null) {
-  if (!WHATSAPP_TOKEN) return;
-  const d = JSON.stringify(tmpl ? { messaging_product: 'whatsapp', to, type: 'template', template: { name: tmpl, language: { code: 'en_US' } } } : { messaging_product: 'whatsapp', to, type: 'text', text: { body: msg } });
-  const req = https.request({ hostname: 'graph.facebook.com', path: `/v17.0/${PHONE_NUMBER_ID}/messages`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
-  req.on('error', () => { });
-  req.write(d);
-  req.end();
-}
-
 async function getAIResponse(history) {
   const rawFlow = await getSetting('botFlow');
   let flowObj = {};
@@ -192,10 +158,32 @@ const server = http.createServer(async (req, res) => {
       try {
         const p = JSON.parse(b);
         if (!p.phone) { res.writeHead(400); return res.end(JSON.stringify({ success: false })); }
-        sendWhatsAppMessage(p.phone, p.message || '', p.useTemplate ? (p.templateName || 'hello_world') : null);
         const ts = new Date().toISOString();
         db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [p.phone, ts, p.message], () => {
           res.writeHead(200);
           res.end(JSON.stringify({ success: true }));
         });
-      } catch (e) { res.writeHead(
+      } catch (e) { res.writeHead(400); res.end(); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/sandbox' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', async () => {
+      try {
+        const p = JSON.parse(b);
+        const rep = await getAIResponse([{ role: 'user', content: p.message }]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ reply: rep }));
+      } catch (e) { res.writeHead(400); res.end(); }
+    });
+    return;
+  }
+
+  res.writeHead(200);
+  res.end('Ava SQLite Engine Active');
+});
+
+server.listen(PORT, () => console.log('Ava SQLite Engine live on port ' + PORT));
