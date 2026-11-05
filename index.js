@@ -205,3 +205,63 @@ const server = http.createServer(async (req, res) => {
         reqMeta.on('error', () => res.end(JSON.stringify({ success: false })));
         reqMeta.write(payload);
         reqMeta.end();
+      } catch (e) { res.writeHead(400); res.end(); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/sandbox' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', async () => {
+      try {
+        const p = JSON.parse(b);
+        const rep = await getAIResponse([{ role: 'user', content: p.message }]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ reply: rep }));
+      } catch (e) { res.writeHead(400); res.end(); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/webhook' && req.method === 'GET') {
+    const m = pUrl.query['hub.mode'], t = pUrl.query['hub.verify_token'], c = pUrl.query['hub.challenge'];
+    if (m === 'subscribe' && t === VERIFY_TOKEN) { res.writeHead(200); res.end(c); } else { res.writeHead(403); res.end(); }
+    return;
+  }
+
+  if (pUrl.pathname === '/webhook' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', async () => {
+      res.writeHead(200);
+      res.end('OK');
+      try {
+        const payload = JSON.parse(b);
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        if (message && message.type === 'text') {
+          const f = message.from;
+          const t = message.text.body;
+          const n = payload.entry[0].changes[0].value.contacts[0].profile.name || 'there';
+          const ts = new Date().toISOString();
+
+          db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, [f, ts, t]);
+
+          db.all(`SELECT sender, message FROM chat_logs WHERE phone = ? ORDER BY timestamp ASC`, [f], async (err, rows) => {
+            const history = (rows || []).map(r => ({ role: r.sender === 'Client' ? 'user' : 'assistant', content: r.message }));
+            const rep = await getAIResponse(history);
+
+            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [f, ts, rep]);
+            sendWhatsAppMessage(f, rep);
+          });
+        }
+      } catch (e) { }
+    });
+    return;
+  }
+
+  res.writeHead(200);
+  res.end('Ava Bulletproof Persistent SQLite Engine Active');
+});
+
+server.listen(PORT, () => console.log('Ava Persistent Engine live on port ' + PORT));
