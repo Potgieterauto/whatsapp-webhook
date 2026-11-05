@@ -12,6 +12,18 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const WABA_ID = process.env.WABA_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+// --- AUTOMATIC WHATSAPP NUMBER FORMATTER ---
+function formatWhatsAppNumber(phone) {
+  if (!phone) return '';
+  // Strip all non-digit characters
+  let cleaned = phone.toString().replace(/\D/g, '');
+  // Convert South African local format (0821234567) to WhatsApp international format (27821234567)
+  if (cleaned.startsWith('0') && cleaned.length === 10) {
+    cleaned = '27' + cleaned.substring(1);
+  }
+  return cleaned;
+}
+
 // --- PERSISTENT RENDER DISK SETUP ---
 const dataDir = fs.existsSync('/data') ? '/data' : __dirname;
 const dbFile = path.join(dataDir, 'avadb.sqlite');
@@ -151,14 +163,15 @@ async function getAIResponse(history) {
 
 function sendWhatsAppMessage(to, msg, tmpl = null) {
   if (!WHATSAPP_TOKEN) return;
+  const formattedTo = formatWhatsAppNumber(to);
   const d = JSON.stringify(tmpl ? {
     messaging_product: 'whatsapp',
-    to: to,
+    to: formattedTo,
     type: 'template',
     template: { name: tmpl, language: { code: 'en_US' } }
   } : {
     messaging_product: 'whatsapp',
-    to: to,
+    to: formattedTo,
     type: 'text',
     text: { body: msg }
   });
@@ -210,227 +223,8 @@ const server = http.createServer(async (req, res) => {
       if (clientSheet) {
         const rows = await clientSheet.getRows();
         for (const r of rows) {
-          const phone = r.get('Phone');
-          if (phone) {
+          const rawPhone = r.get('Phone');
+          if (rawPhone) {
+            const formattedPhone = formatWhatsAppNumber(rawPhone);
             db.run(`INSERT OR IGNORE INTO leads (phone, timestamp, name, vehicle, condition, budget, tier) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-              [phone, r.get('Date'), r.get('Name'), r.get('Vehicle'), r.get('Condition'), r.get('Budget'), r.get('Tier') || 'Warm']);
-          }
-        }
-      }
-      
-      const logSheet = doc.sheetsByTitle['Chat Logs'];
-      if (logSheet) {
-        const rows = await logSheet.getRows();
-        for (const r of rows) {
-          const phone = r.get('Phone');
-          const msgText = r.get('Message');
-          let ts = r.get('Timestamp') || new Date().toISOString();
-          if (phone && msgText) {
-            const splitMsgs = msgText.split('|');
-            for (const m of splitMsgs) {
-              let txt = m.trim();
-              let sender = 'Client';
-              let content = txt;
-              if (txt.startsWith('[Ava]:')) { sender = 'Ava'; content = txt.replace('[Ava]:','').trim(); }
-              else if (txt.startsWith('[Client]:')) { sender = 'Client'; content = txt.replace('[Client]:','').trim(); }
-              db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, ?, ?)`, [phone, ts, sender, content]);
-            }
-          }
-        }
-      }
-      
-      res.writeHead(200);
-      return res.end("MIGRATION SUCCESSFUL! Historical data safely loaded into permanent SQLite storage.");
-    } catch (e) {
-      res.writeHead(500);
-      return res.end("ERROR: " + e.message);
-    }
-  }
-
-  // --- WEBSITE LEAD FORM API ENDPOINT ---
-  if (pUrl.pathname === '/api/leads' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(body);
-        if (!payload.name || !payload.phone) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ success: false, error: "Name and phone are required." }));
-        }
-
-        const ts = new Date().toISOString();
-        const tier = payload.tier || 'Warm';
-
-        db.run(
-          `INSERT OR REPLACE INTO leads (phone, timestamp, name, vehicle, condition, budget, tier) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [payload.phone, ts, payload.name, payload.vehicle || 'Not Specified', payload.condition || 'New/Used', payload.budget || 'Not Specified', tier],
-          (err) => {
-            if (err) {
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              return res.end(JSON.stringify({ success: false, error: err.message }));
-            }
-
-            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, 
-              [payload.phone, ts, `[Website Enquiry - Vehicle: ${payload.vehicle || 'General'}] ${payload.message || ''}`]);
-
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true, message: 'Lead saved successfully and synced to CRM' }));
-          }
-        );
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: "Invalid JSON payload" }));
-      }
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/leads' && req.method === 'GET') {
-    db.all(`SELECT timestamp, name, phone, vehicle, condition, budget, tier FROM leads ORDER BY timestamp DESC`, [], (err, rows) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(rows || []));
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/contacts' && req.method === 'GET') {
-    const conversations = await getConversationsFromDB();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ conversations }));
-    return;
-  }
-
-  if (pUrl.pathname === '/api/flow' && req.method === 'GET') {
-    const raw = await getSetting('botFlow');
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(raw || '{}');
-    return;
-  }
-
-  if (pUrl.pathname === '/api/flow' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-      await saveSetting('botFlow', body);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true }));
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/update-lead' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(body);
-        db.run(`UPDATE leads SET tier = ? WHERE phone = ?`, [payload.tier, payload.phone], (err) => {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: !err }));
-        });
-      } catch (e) { res.writeHead(400); res.end(); }
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/send-message' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        const payload = JSON.parse(body);
-        if (!payload.phone) { res.writeHead(400); return res.end(JSON.stringify({ success: false })); }
-        
-        if (payload.useTemplate) {
-          sendWhatsAppMessage(payload.phone, '', payload.templateName);
-        } else {
-          sendWhatsAppMessage(payload.phone, payload.message);
-        }
-
-        const ts = new Date().toISOString();
-        db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Potgieter Auto (Human)', ?)`, 
-          [payload.phone, ts, payload.message || `[Template: ${payload.templateName}]`], () => {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: true }));
-        });
-      } catch (e) { res.writeHead(400); res.end(JSON.stringify({ success: false })); }
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/create-template' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      try {
-        if (!WABA_ID) { res.writeHead(400); return res.end(JSON.stringify({ success: false, error: "WABA_ID missing" })); }
-        const payload = JSON.parse(body);
-        const metaData = JSON.stringify({ name: payload.name, language: payload.language || "en_US", category: payload.category || "MARKETING", components: [{ type: "BODY", text: payload.body }] });
-        const reqMeta = https.request({ hostname: 'graph.facebook.com', path: `/v17.0/${WABA_ID}/message_templates`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }, metaRes => {
-          let mb = '';
-          metaRes.on('data', mc => { mb += mc; });
-          metaRes.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(mb); });
-        });
-        reqMeta.on('error', () => res.end(JSON.stringify({ success: false })));
-        reqMeta.write(metaData);
-        reqMeta.end();
-      } catch (e) { res.writeHead(400); res.end(); }
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/api/sandbox' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body);
-        const reply = await getAIResponse([{ role: 'user', content: payload.message }]);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ reply: reply }));
-      } catch (e) { res.writeHead(400); res.end(); }
-    });
-    return;
-  }
-
-  if (pUrl.pathname === '/webhook' && req.method === 'GET') {
-    const mode = pUrl.query['hub.mode'], token = pUrl.query['hub.verify_token'], challenge = pUrl.query['hub.challenge'];
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) { res.writeHead(200); res.end(challenge); } else { res.writeHead(403); res.end(); }
-    return;
-  }
-
-  if (pUrl.pathname === '/webhook' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', async () => {
-      res.writeHead(200);
-      res.end('OK');
-      try {
-        const payload = JSON.parse(body);
-        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-        if (message && message.type === 'text') {
-          const from = message.from;
-          const textBody = message.text.body;
-          const ts = new Date().toISOString();
-
-          db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, [from, ts, textBody]);
-
-          db.all(`SELECT sender, message FROM chat_logs WHERE phone = ? ORDER BY timestamp ASC`, [from], async (err, rows) => {
-            const history = (rows || []).map(r => ({ role: r.sender === 'Client' ? 'user' : 'assistant', content: r.message }));
-            const reply = await getAIResponse(history);
-
-            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [from, ts, reply]);
-            sendWhatsAppMessage(from, reply);
-          });
-        }
-      } catch (e) { }
-    });
-    return;
-  }
-
-  res.writeHead(200);
-  res.end('Ava Persistent Engine Active');
-});
-
-server.listen(PORT, () => console.log('Ava Persistent Engine live on port ' + PORT));
+              [formattedPhone, r.get('Date'), r.get('Name'), r.get('Vehicle'), r.get('Condition
