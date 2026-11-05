@@ -1,11 +1,12 @@
 {
-  "name": "potgieter-auto-backend",
+  "name": "whatsapp-webhook",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "sqlite3": "^5.1.7"
+    "google-auth-library": "^9.15.0",
+    "google-spreadsheet": "^4.1.4"
   }
 }
