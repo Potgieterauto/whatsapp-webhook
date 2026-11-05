@@ -1,5 +1,5 @@
 const http = require('http');
-const https = https = require('https');
+const https = require('https');
 const url = require('url');
 const path = require('path');
 const fs = require('fs');
@@ -13,7 +13,6 @@ const WABA_ID = process.env.WABA_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // --- PERSISTENT RENDER DISK SETUP ---
-// Ensures data is stored safely on the mounted /data disk so it survives redeploys
 const dataDir = fs.existsSync('/data') ? '/data' : __dirname;
 const dbFile = path.join(dataDir, 'avadb.sqlite');
 console.log('Using database path:', dbFile);
@@ -120,4 +119,89 @@ const server = http.createServer(async (req, res) => {
   const pUrl = url.parse(req.url, true);
 
   if (pUrl.pathname === '/api/leads' && req.method === 'GET') {
-    db.all(`SELECT timestamp, name, phone, vehicle, condition, budget, tier FROM leads ORDER BY timestamp DESC`, [], (
+    db.all(`SELECT timestamp, name, phone, vehicle, condition, budget, tier FROM leads ORDER BY timestamp DESC`, [], (err, rows) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rows || []));
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/contacts' && req.method === 'GET') {
+    const conversations = await getConversationsFromDB();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ conversations }));
+    return;
+  }
+
+  if (pUrl.pathname === '/api/flow' && req.method === 'GET') {
+    const raw = await getSetting('botFlow');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(raw || '{}');
+    return;
+  }
+  if (pUrl.pathname === '/api/flow' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', async () => {
+      await saveSetting('botFlow', b);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/update-lead' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(b);
+        db.run(`UPDATE leads SET tier = ? WHERE phone = ?`, [p.tier, p.phone], (err) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: !err }));
+        });
+      } catch (e) { res.writeHead(400); res.end(); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/send-message' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', () => {
+      try {
+        const p = JSON.parse(b);
+        if (!p.phone) { res.writeHead(400); return res.end(JSON.stringify({ success: false })); }
+        
+        if (p.useTemplate) {
+          sendWhatsAppMessage(p.phone, '', p.templateName);
+        } else {
+          sendWhatsAppMessage(p.phone, p.message);
+        }
+
+        const ts = new Date().toISOString();
+        db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Potgieter Auto (Human)', ?)`, [p.phone, ts, p.message || `[Template: ${p.templateName}]`], () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true }));
+        });
+      } catch (e) { res.writeHead(400); res.end(JSON.stringify({ success: false })); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/create-template' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', () => {
+      try {
+        if (!WABA_ID) { res.writeHead(400); return res.end(JSON.stringify({ success: false, error: "WABA_ID missing" })); }
+        const p = JSON.parse(b);
+        const payload = JSON.stringify({ name: p.name, language: p.language || "en_US", category: p.category || "MARKETING", components: [{ type: "BODY", text: p.body }] });
+        const reqMeta = https.request({ hostname: 'graph.facebook.com', path: `/v17.0/${WABA_ID}/message_templates`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }, metaRes => {
+          let mb = '';
+          metaRes.on('data', mc => mb += mc);
+          metaRes.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(mb); });
+        });
+        reqMeta.on('error', () => res.end(JSON.stringify({ success: false })));
+        reqMeta.write(payload);
+        reqMeta.end();
