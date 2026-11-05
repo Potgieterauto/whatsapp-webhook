@@ -1,26 +1,12 @@
-// UPDATED SEND MESSAGE ROUTE (Supports human agent takeover vs templates)
-  if (pUrl.pathname === '/api/send-message' && req.method === 'POST') {
-    let b = '';
-    req.on('data', c => b += c);
-    req.on('end', () => {
-      try {
-        const p = JSON.parse(b);
-        if (!p.phone) { res.writeHead(400); return res.end(JSON.stringify({ success: false })); }
-        
-        // If it's a template send or a manual text message, dispatch directly to Meta Graph API
-        if (p.useTemplate) {
-          sendWhatsAppMessage(p.phone, '', p.templateName);
-        } else {
-          sendWhatsAppMessage(p.phone, p.message);
-        }
-
-        const ts = new Date().toISOString();
-        // Log manual human agent reply into SQLite database
-        db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Potgieter Auto (Human)', ?)`, [p.phone, ts, p.message], () => {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true }));
-        });
-      } catch (e) { res.writeHead(400); res.end(JSON.stringify({ success: false })); }
-    });
-    return;
+{
+  "name": "whatsapp-webhook",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "google-auth-library": "^9.15.0",
+    "google-spreadsheet": "^4.1.4"
   }
+}
