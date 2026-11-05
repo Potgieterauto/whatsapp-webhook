@@ -48,8 +48,8 @@ function getConversationsFromDB() {
       const conversations = {};
       rows.forEach(r => {
         if (!conversations[r.phone]) { conversations[r.phone] = { phone: r.phone, messages: [], lastUpdated: r.timestamp }; }
-        const role = r.sender === 'Ava' ? 'assistant' : 'user';
-        conversations[r.phone].messages.push({ role, content: r.message });
+        const role = r.sender === 'Client' ? 'user' : 'assistant';
+        conversations[r.phone].messages.push({ role, sender: r.sender, content: r.message });
         conversations[r.phone].lastUpdated = r.timestamp;
       });
       resolve(conversations);
@@ -95,6 +95,15 @@ async function getAIResponse(history) {
     req.write(data);
     req.end();
   });
+}
+
+function sendWhatsAppMessage(to, msg, tmpl = null) {
+  if (!WHATSAPP_TOKEN) return;
+  const d = JSON.stringify(tmpl ? { messaging_product: 'whatsapp', to, type: 'template', template: { name: tmpl, language: { code: 'en_US' } } } : { messaging_product: 'whatsapp', to, type: 'text', text: { body: msg } });
+  const req = https.request({ hostname: 'graph.facebook.com', path: `/v17.0/${PHONE_NUMBER_ID}/messages`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } });
+  req.on('error', () => { });
+  req.write(d);
+  req.end();
 }
 
 const server = http.createServer(async (req, res) => {
@@ -151,6 +160,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // HUMAN AGENT / TEMPLATE MESSAGE SENDER ROUTE
   if (pUrl.pathname === '/api/send-message' && req.method === 'POST') {
     let b = '';
     req.on('data', c => b += c);
@@ -158,11 +168,39 @@ const server = http.createServer(async (req, res) => {
       try {
         const p = JSON.parse(b);
         if (!p.phone) { res.writeHead(400); return res.end(JSON.stringify({ success: false })); }
+        
+        if (p.useTemplate) {
+          sendWhatsAppMessage(p.phone, '', p.templateName);
+        } else {
+          sendWhatsAppMessage(p.phone, p.message);
+        }
+
         const ts = new Date().toISOString();
-        db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [p.phone, ts, p.message], () => {
-          res.writeHead(200);
+        db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Potgieter Auto (Human)', ?)`, [p.phone, ts, p.message || `[Template: ${p.templateName}]`], () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true }));
         });
+      } catch (e) { res.writeHead(400); res.end(JSON.stringify({ success: false })); }
+    });
+    return;
+  }
+
+  if (pUrl.pathname === '/api/create-template' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', () => {
+      try {
+        if (!WABA_ID) { res.writeHead(400); return res.end(JSON.stringify({ success: false, error: "WABA_ID missing" })); }
+        const p = JSON.parse(b);
+        const payload = JSON.stringify({ name: p.name, language: p.language || "en_US", category: p.category || "MARKETING", components: [{ type: "BODY", text: p.body }] });
+        const reqMeta = https.request({ hostname: 'graph.facebook.com', path: `/v17.0/${WABA_ID}/message_templates`, method: 'POST', headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' } }, metaRes => {
+          let mb = '';
+          metaRes.on('data', mc => mb += mc);
+          metaRes.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(mb); });
+        });
+        reqMeta.on('error', () => res.end(JSON.stringify({ success: false })));
+        reqMeta.write(payload);
+        reqMeta.end();
       } catch (e) { res.writeHead(400); res.end(); }
     });
     return;
@@ -182,8 +220,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pUrl.pathname === '/webhook' && req.method === 'GET') {
+    const m = pUrl.query['hub.mode'], t = pUrl.query['hub.verify_token'], c = pUrl.query['hub.challenge'];
+    if (m === 'subscribe' && t === VERIFY_TOKEN) { res.writeHead(200); res.end(c); } else { res.writeHead(403); res.end(); }
+    return;
+  }
+
+  if (pUrl.pathname === '/webhook' && req.method === 'POST') {
+    let b = '';
+    req.on('data', c => b += c);
+    req.on('end', async () => {
+      res.writeHead(200);
+      res.end('OK');
+      try {
+        const payload = JSON.parse(b);
+        const message = payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+        if (message && message.type === 'text') {
+          const f = message.from;
+          const t = message.text.body;
+          const n = payload.entry[0].changes[0].value.contacts[0].profile.name || 'there';
+          const ts = new Date().toISOString();
+
+          db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Client', ?)`, [f, ts, t]);
+
+          db.all(`SELECT sender, message FROM chat_logs WHERE phone = ? ORDER BY timestamp ASC`, [f], async (err, rows) => {
+            const history = (rows || []).map(r => ({ role: r.sender === 'Client' ? 'user' : 'assistant', content: r.message }));
+            const rep = await getAIResponse(history);
+
+            db.run(`INSERT INTO chat_logs (phone, timestamp, sender, message) VALUES (?, ?, 'Ava', ?)`, [f, ts, rep]);
+            sendWhatsAppMessage(f, rep);
+          });
+        }
+      } catch (e) { }
+    });
+    return;
+  }
+
   res.writeHead(200);
-  res.end('Ava SQLite Engine Active');
+  res.end('Ava Bulletproof SQLite Engine Active');
 });
 
 server.listen(PORT, () => console.log('Ava SQLite Engine live on port ' + PORT));
